@@ -9,6 +9,7 @@ from sqlalchemy import func, desc
 from app.db.database import get_session
 from app.models.models import ScrapeRun, ScrapeSchedule, ExtractedAd
 from app.workers.scheduler import scrape_meta_ads_task
+from app.utils.analytics import get_ad_longevity_category
 
 def render_ui(task_queue):
     st.set_page_config(page_title="AdSpy AI Competitor Intelligence OS", layout="wide")

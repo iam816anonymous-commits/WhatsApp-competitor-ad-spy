@@ -1,18 +1,41 @@
-# 🕵️ AdSpy AI: Competitor Intelligence OS
+# 🕵️ AdSpy Intelligence Platform (v3.0 Orchestrated)
 
-An enterprise-grade AI agent system for autonomous competitor intelligence, multi-platform scraping, and predictive marketing analytics.
+A sophisticated Market Intelligence Platform featuring multi-agent orchestration, temporal analytics, and visual clone detection.
 
-## 🚀 Key Upgrades (v2.0 Modular)
+## 🚀 Enterprise Tier Upgrades
 
-### 🏗️ Modular Micro-Architecture
-The application has been refactored from a monolithic script into a professional multi-package system:
-- `app/agents`: Domain-specific AI agents (Vision, Strategy, Scraper).
-- `app/db`: Database connectivity and session management.
-- `app/models`: SQLAlchemy 2.0 type-safe models.
-- `app/scrapers`: Multi-platform extraction engines.
-- `app/ui`: Streamlit frontend components.
-- `app/utils`: Asynchronous media processing and link deobfuscation.
-- `app/workers`: Background task orchestration and scheduling.
+### 🏗️ Multi-Agent Orchestration
+AdSpy now uses a formal execution graph managed by the `IntelligenceOrchestrator`:
+1.  **Collector**: Async scraping of ad libraries.
+2.  **Normalizer**: Entity mapping for Brands, Offers, and Landing Pages.
+3.  **Vision Agent**: CLIP-based visual embedding generation.
+4.  **Strategy Agent**: Deep tactical extraction using Gemini 2.0 Flash.
+5.  **Market Agent**: Temporal trend analysis and volume tracking.
+6.  **Alert Engine**: Automated high-signal notifications (WhatsApp/System).
+
+### 🧠 Intelligence Memory Layer
+Enhanced data models now track high-level entities:
+- **Brands**: Monitor competitor aggression and website changes.
+- **Campaigns**: Automatically group ads into temporal clusters.
+- **Offers**: Detect price shifts and discount strategies.
+- **Landing Pages**: Deep crawl extraction (Headlines, CTAs, Pixels).
+- **Trend Snapshots**: Daily volume and emotion shift tracking.
+
+### 🌐 API-First Architecture
+Exposed a robust **FastAPI backend** on port `8000`:
+- `POST /scrape`: Programmatic trigger for new intelligence jobs.
+- `GET /brands`: Retrieve competitive landscape data.
+- `GET /winners`: Access statistically proven winning ad assets.
+- `GET /health`: Monitor system costs and operational status.
+
+### 👁️ Visual Clone Detection
+Integrated a `VectorStore` interface with **CLIP embeddings** to detect creative reuse across competitors and identify high-performing visual hooks.
+
+### ⚡ Technical Stack
+- **Frontend**: Streamlit Unified Command Center.
+- **Backend**: FastAPI Microservice.
+- **Agents**: CLIP (Vision), Gemini 2.0 (Strategy), Market & Alert Agents.
+- **Storage**: SQLAlchemy (Postgres Ready) + Alembic Migrations.
 
 ### 👁️ Visual Intelligence (Phase 3)
 - **CLIP Embeddings**: Uses OpenAI's CLIP (ViT-B-32) via `sentence-transformers` to generate 512-dimensional visual embeddings for every archived creative.

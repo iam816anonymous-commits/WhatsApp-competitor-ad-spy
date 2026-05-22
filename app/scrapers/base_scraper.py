@@ -12,8 +12,7 @@ from playwright.async_api import async_playwright, Browser, BrowserContext
 from app.db.database import get_session
 from app.models.models import ScrapeRun, ExtractedAd
 from app.utils.media import download_media, resolve_redirects
-from app.agents.ai_agent import analyze_ads_with_ai
-from app.agents.vision_agent import generate_image_embedding
+# Orchestrator will handle AI and Embeddings now
 
 logger = logging.getLogger("AdSpyAgent.Scraper")
 
@@ -58,45 +57,10 @@ class BaseScraper(ABC):
 
                     await self.execute_scrape(page)
 
-                    # Multimodal AI analysis
-                    run_ads_data = [
-                        {
-                            "text": ad.ad_text,
-                            "local_path": ad.local_media_path,
-                            "destination_url": ad.final_destination_url
-                        } for ad in run.ads
-                    ]
-                    if run_ads_data:
-                        logger.info(f"Starting Multimodal AI analysis for run {self.run_id}")
-                        raw_result = await analyze_ads_with_ai(run_ads_data)
-
-                        try:
-                            # Clean markdown code blocks if Gemini includes them
-                            clean_json = re.sub(r'```json\n?|\n?```', '', raw_result).strip()
-                            data = json.loads(clean_json)
-
-                            run.analysis_text = data.get("analysis_text", raw_result)
-                            run.cta_type = data.get("cta_type")
-                            run.emotion = data.get("emotion")
-                            run.offer_type = data.get("offer_type")
-                            run.price_point = data.get("price_point")
-                            run.discount = data.get("discount")
-                            run.urgency_score = data.get("urgency_score")
-                            run.persona = data.get("persona")
-                            run.visual_style = data.get("visual_style")
-                            run.headline = data.get("headline")
-                            run.hook_type = data.get("hook_type")
-                            run.cta_text = data.get("cta_text")
-                            run.brand_color = data.get("brand_color")
-
-                            # Also update individual ads with funnel type
-                            for ad_db in run.ads:
-                                ad_db.funnel_type = data.get("funnel_type")
-                        except Exception as e:
-                            logger.error(f"Failed to parse AI JSON: {e}")
-                            run.analysis_text = raw_result
-
-                        session.commit()
+                    # Hand off to Orchestrator
+                    from app.orchestrator.engine import IntelligenceOrchestrator
+                    orch = IntelligenceOrchestrator(self.run_id)
+                    await orch.execute_pipeline()
 
                     run.status = "COMPLETED"
                     session.commit()
