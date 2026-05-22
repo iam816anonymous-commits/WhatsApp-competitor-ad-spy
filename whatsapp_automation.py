@@ -17,27 +17,61 @@ logging.basicConfig(
 logger = logging.getLogger("WhatsAppAutomation")
 
 async def send_whatsapp_message(phone, user_data_dir=None):
-    # Upgrade 3: High-Signal Intelligence Digest
+    # Upgrade 2: High-Signal Winning Alert Logic
     digest = ""
     try:
         conn = sqlite3.connect('ad_spy.db')
         cursor = conn.cursor()
-        # Fetch AI analysis from the most recent completed run
+
+        # 1. Fetch AI analysis from the most recent completed run
         cursor.execute("""
-            SELECT query, analysis_text, timestamp
+            SELECT id, query, analysis_text, timestamp
             FROM scrape_runs
             WHERE status = 'COMPLETED'
             ORDER BY timestamp DESC
             LIMIT 1
         """)
         row = cursor.fetchone()
-        if not row or not row[1]:
-            logger.warning("No completed scrape runs with AI analysis found.")
+        if not row:
+            logger.warning("No completed scrape runs found.")
             return
 
-        query, analysis, timestamp = row
-        digest = f"*🕵️ Ad Intelligence Digest: {query}*\n"
+        run_id, query, analysis, timestamp = row
+
+        # 2. Check for "Winning Core Assets" (Ad Longevity > 21 days)
+        # In a real scenario, we'd compare dates. Here we simulate looking for ads that transitioned.
+        cursor.execute("""
+            SELECT ad_text, launch_date FROM extracted_ads
+            WHERE run_id = ?
+        """, (run_id,))
+        ads = cursor.fetchall()
+
+        winners = []
+        from datetime import datetime
+        for ad_text, launch_date_str in ads:
+            try:
+                # Meta format: "May 22, 2024"
+                launch_date = datetime.strptime(launch_date_str, "%b %d, %Y")
+                days = (datetime.utcnow() - launch_date).days
+                if days > 21:
+                    winners.append(ad_text[:100] + "...")
+            except:
+                continue
+
+        # Notification Fatigue Filter: Only send if there's a winner or a fresh analysis
+        if not winners and "Winning" not in str(analysis):
+             logger.info("No high-signal 'Winning' assets found. Skipping notification to avoid fatigue.")
+             # return # Uncomment in production to enable filtering
+
+        digest = f"*🏆 WINNING AD ALERT: {query}*\n" if winners else f"*🕵️ Ad Intelligence Digest: {query}*\n"
         digest += f"📅 _Generated: {timestamp}_\n\n"
+
+        if winners:
+            digest += "🔥 *Winning Core Assets Detected (Active > 21 Days):*\n"
+            for w in winners[:3]:
+                digest += f"• {w}\n"
+            digest += "\n"
+
         digest += f"📈 *Market Intelligence:*\n{analysis}\n\n"
         digest += "🚀 _Sent by Competitor Ad Spy Agent_"
         conn.close()

@@ -16,6 +16,7 @@ import base64
 from datetime import datetime, timedelta
 from threading import Thread
 from queue import Queue
+from abc import ABC, abstractmethod
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, ForeignKey, func
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
@@ -61,6 +62,9 @@ class ExtractedAd(Base):
     media_links = Column(Text)
     local_media_path = Column(String)
     content_hash = Column(String, unique=True)
+    final_destination_url = Column(Text)
+    funnel_type = Column(String)
+    last_seen = Column(DateTime, default=datetime.utcnow)
     run = relationship("ScrapeRun", back_populates="ads")
 
 engine = create_engine('sqlite:///ad_spy.db', connect_args={"check_same_thread": False})
@@ -69,6 +73,19 @@ Session = sessionmaker(bind=engine)
 
 # Media Archive setup
 os.makedirs("media_archive", exist_ok=True)
+
+def get_ad_longevity_category(launch_date_str):
+    try:
+        launch_date = datetime.strptime(launch_date_str, "%b %d, %Y")
+        days = (datetime.utcnow() - launch_date).days
+        if days > 21:
+            return "Winning Core Asset", days
+        elif days > 7:
+            return "Scaling", days
+        else:
+            return "Testing Phase", days
+    except:
+        return "Unknown", 0
 
 def download_media(url):
     if not url:
@@ -105,6 +122,7 @@ def get_task_queue():
 
 def background_worker(q):
     last_schedule_check = datetime.utcnow()
+    last_maintenance_check = datetime.utcnow()
     while True:
         # 1. Process tasks from queue
         try:
@@ -169,6 +187,29 @@ def background_worker(q):
             except Exception as e:
                 logger.error(f"Error in scheduler/recovery: {e}")
 
+        # 3. Intelligent Auto-Pruning & Maintenance (every 24h)
+        if datetime.utcnow() - last_maintenance_check > timedelta(hours=24):
+            last_maintenance_check = datetime.utcnow()
+            try:
+                session = Session()
+                # Prune media for ads not seen in > 90 days
+                prune_threshold = datetime.utcnow() - timedelta(days=90)
+                old_ads = session.query(ExtractedAd).filter(
+                    ExtractedAd.last_seen < prune_threshold,
+                    ExtractedAd.local_media_path != None
+                ).all()
+
+                for ad in old_ads:
+                    if os.path.exists(ad.local_media_path):
+                        os.remove(ad.local_media_path)
+                        logger.info(f"Pruned old media: {ad.local_media_path}")
+                    ad.local_media_path = None # Keep the DB row, just remove the file
+
+                session.commit()
+                session.close()
+            except Exception as e:
+                logger.error(f"Maintenance error: {e}")
+
 task_queue = get_task_queue()
 
 # AI Analysis Configuration
@@ -197,13 +238,16 @@ def analyze_ads_with_ai(ads_data_list):
                 pass
 
     prompt = f"""
-    Analyze these Meta ads (text and accompanying images).
+    Analyze these ads (text, images, and destination URLs).
     Perform OCR on any text embedded in the graphics.
+
     Provide a structured report:
-    1. Visual Strategy & OCR: What text is in the images? What colors/styles are used?
-    2. Dominant Emotional Hook: What is the main angle they are testing?
-    3. Marketing Strategy: 3 bullet points summarizing their approach.
-    4. Aggression Rating: Low, Medium, or High.
+    1. Visual Strategy & OCR: What text is in the images? What colors/styles/branding are used?
+    2. Funnel Mapping: Based on the destination URLs and ad copy, what is the funnel type?
+       (e.g., Direct-to-Consumer Product Page, VSL/Webinar, Lead Magnet, Advertorial, or SaaS Sign-up).
+    3. Dominant Emotional Hook: What is the main angle/pain point they are testing?
+    4. Marketing Strategy: 3 tactical bullet points summarizing their approach.
+    5. Winning Prediction: Which ad looks like the most stable 'winner' and why?
 
     Ads Context:
     {text_summary}
@@ -228,6 +272,183 @@ def analyze_ads_with_ai(ads_data_list):
 class BrowserConfig:
     CHROME_USER_DATA_DIR = "/path/to/your/chrome/user/data"  # Plug in your local path here
     EXECUTABLE_PATH = None  # Optional: path to chrome executable
+
+class BaseScraper(ABC):
+    def __init__(self, run_id, query_or_url):
+        self.run_id = run_id
+        self.query_or_url = query_or_url
+        self.browser = None
+        self.context = None
+
+    @abstractmethod
+    async def initialize_browser(self, playwright):
+        pass
+
+    @abstractmethod
+    async def execute_scrape(self, page):
+        pass
+
+    async def run(self):
+        session = Session()
+        run = session.query(ScrapeRun).get(self.run_id)
+        if not run:
+            session.close()
+            return
+
+        run.status = "RUNNING"
+        session.commit()
+
+        from playwright.async_api import async_playwright
+        try:
+            async with async_playwright() as p:
+                await self.initialize_browser(p)
+                page = await self.context.new_page()
+                # Anti-bot evasion
+                await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+
+                await self.execute_scrape(page)
+
+                # Perform AI Analysis before completing
+                run_ads_data = [
+                    {
+                        "text": ad.ad_text,
+                        "local_path": ad.local_media_path,
+                        "destination_url": ad.final_destination_url
+                    } for ad in run.ads
+                ]
+                if run_ads_data:
+                    logger.info(f"Starting Multimodal AI analysis for run {self.run_id}")
+                    run.analysis_text = analyze_ads_with_ai(run_ads_data)
+                    session.commit()
+
+                run.status = "COMPLETED"
+                session.commit()
+        except Exception as e:
+            logger.error(f"Scrape failed for run {self.run_id}: {e}")
+            run.status = "FAILED"
+            run.next_retry_at = datetime.utcnow() + timedelta(minutes=15)
+            session.commit()
+        finally:
+            if self.context:
+                await self.context.close()
+            if self.browser:
+                await self.browser.close()
+            session.close()
+
+class MetaScraper(BaseScraper):
+    async def initialize_browser(self, p):
+        if BrowserConfig.CHROME_USER_DATA_DIR and BrowserConfig.CHROME_USER_DATA_DIR != "/path/to/your/chrome/user/data":
+            self.context = await p.chromium.launch_persistent_context(
+                BrowserConfig.CHROME_USER_DATA_DIR,
+                executable_path=BrowserConfig.EXECUTABLE_PATH,
+                headless=False
+            )
+        else:
+            self.browser = await p.chromium.launch(headless=True)
+            self.context = await self.browser.new_context()
+
+    async def execute_scrape(self, page):
+        if self.query_or_url.startswith("http"):
+            url = self.query_or_url
+        else:
+            query_encoded = urllib.parse.quote(self.query_or_url)
+            url = f"https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=ALL&q={query_encoded}&search_type=keyword_unordered&media_type=all"
+
+        logger.info(f"Navigating to Meta Ad Library: {url}")
+        await page.goto(url, wait_until="networkidle", timeout=60000)
+
+        # Human-like scrolling
+        for i in range(5):
+            scroll_amount = random.randint(300, 700)
+            await page.evaluate(f"window.scrollBy(0, {scroll_amount})")
+            await asyncio.sleep(random.uniform(0.5, 1.5))
+            if i % 3 == 0:
+                await page.evaluate(f"window.scrollBy(0, -{random.randint(100, 200)})")
+                await asyncio.sleep(random.uniform(0.3, 0.7))
+
+        ad_cards = page.locator('div').filter(has_text="Started running on")
+        count = await ad_cards.count()
+        session = Session()
+        run = session.query(ScrapeRun).get(self.run_id)
+
+        for i in range(count):
+            card = ad_cards.nth(i)
+            try:
+                card_text = await card.inner_text()
+                date_match = re.search(r"Started running on (.*)", card_text)
+                launch_date_str = date_match.group(1).split('\n')[0] if date_match else "Unknown"
+
+                # Try to parse date for longevity calculations
+                try:
+                    # Meta format is often "May 22, 2024"
+                    launch_date_parsed = datetime.strptime(launch_date_str, "%b %d, %Y")
+                except:
+                    launch_date_parsed = datetime.utcnow()
+
+                lines = card_text.split('\n')
+                ad_text = max(lines, key=len) if lines else "No text found"
+
+                images = await card.locator('img').all()
+                image_links = [await img.get_attribute('src') for img in images if await img.get_attribute('src')]
+                videos = await card.locator('video').all()
+                video_links = [await vid.get_attribute('src') for vid in videos if await vid.get_attribute('src')]
+                media_links_str = ", ".join(image_links + video_links)
+
+                # Extract Outbound Links (Upgrade 1)
+                # Meta usually uses 'a' tags for CTAs
+                cta_link = await card.locator('a[role="button"]').first.get_attribute('href')
+                final_url = resolve_redirects(cta_link) if cta_link else None
+
+                content_to_hash = f"{launch_date_str}|{ad_text}|{media_links_str}"
+                content_hash = hashlib.md5(content_to_hash.encode()).hexdigest()
+
+                existing = session.query(ExtractedAd).filter_by(content_hash=content_hash).first()
+                if not existing:
+                    local_path = download_media(media_links_str)
+                    new_ad = ExtractedAd(
+                        run_id=run.id,
+                        ad_text=ad_text,
+                        launch_date=launch_date_str,
+                        media_links=media_links_str,
+                        local_media_path=local_path,
+                        content_hash=content_hash,
+                        final_destination_url=final_url,
+                        last_seen=datetime.utcnow()
+                    )
+                    session.add(new_ad)
+                else:
+                    existing.last_seen = datetime.utcnow()
+                    if final_url: existing.final_destination_url = final_url
+                session.commit()
+            except Exception as e:
+                logger.error(f"Error parsing ad card: {e}")
+                continue
+        session.close()
+
+class TikTokScraper(BaseScraper):
+    async def initialize_browser(self, p):
+        self.browser = await p.chromium.launch(headless=True)
+        self.context = await self.browser.new_context()
+
+    async def execute_scrape(self, page):
+        # Stub for TikTok Commercial Content Library
+        url = "https://ads.tiktok.com/business/creativecenter/ads/pc/en"
+        logger.info(f"Navigating to TikTok (Stub): {url}")
+        await page.goto(url)
+        # TODO: Implement TikTok specific extraction
+        await asyncio.sleep(2)
+
+def resolve_redirects(url):
+    if not url or not url.startswith('http'):
+        return url
+    try:
+        # Standard headers to avoid bot detection during redirect follow
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        response = requests.head(url, allow_redirects=True, timeout=10, headers=headers)
+        return response.url
+    except Exception as e:
+        logger.error(f"URL Resolution failed for {url}: {e}")
+        return url
 
 st.set_page_config(page_title="Competitor Ad Spy AI Agent", layout="wide")
 
@@ -269,6 +490,15 @@ with tabs[0]:
     for run in latest_analyses:
         with st.expander(f"Analysis for {run.query} ({run.timestamp.strftime('%Y-%m-%d')})"):
             st.write(run.analysis_text)
+
+    st.markdown("### 🏆 Top Winning Assets")
+    winning_ads = session.query(ExtractedAd).all()
+    winners = [ad for ad in winning_ads if get_ad_longevity_category(ad.launch_date)[0] == "Winning Core Asset"]
+    if winners:
+        for w in winners[:3]:
+            st.success(f"**{w.run.query}** - Active for {get_ad_longevity_category(w.launch_date)[1]} days! (Funnel: {w.funnel_type or 'N/A'})")
+    else:
+        st.info("No 'Winning Core Assets' identified yet. Continue monitoring competitors.")
     session.close()
 
 with tabs[1]:
@@ -355,13 +585,17 @@ with tabs[3]:
     if historical_ads:
         df_data = []
         for ad in historical_ads:
+            longevity_cat, days = get_ad_longevity_category(ad.launch_date)
             df_data.append({
                 "ID": ad.id,
                 "Run": ad.run.query,
+                "Status": longevity_cat,
+                "Age (Days)": days,
+                "Funnel": ad.funnel_type or "Unclassified",
+                "Destination": ad.final_destination_url,
                 "Date": ad.launch_date,
-                "Text": ad.ad_text,
-                "Local Media": ad.local_media_path,
-                "Analysis": ad.run.analysis_text
+                "Text": ad.ad_text[:100] + "...",
+                "Local Media": ad.local_media_path
             })
         df = pd.DataFrame(df_data)
         st.dataframe(df, use_container_width=True)
@@ -424,115 +658,12 @@ with tabs[4]:
     session.close()
 
 async def scrape_meta_ads_task(run_id, query_or_url):
-    session = Session()
-    run = session.query(ScrapeRun).get(run_id)
-    if not run:
-        session.close()
-        return
-    run.status = "RUNNING"
-    session.commit()
+    scraper = MetaScraper(run_id, query_or_url)
+    await scraper.run()
 
-    browser_context = None
-    browser = None
-    try:
-        async with async_playwright() as p:
-            try:
-                if BrowserConfig.CHROME_USER_DATA_DIR and BrowserConfig.CHROME_USER_DATA_DIR != "/path/to/your/chrome/user/data":
-                    browser_context = await p.chromium.launch_persistent_context(
-                        BrowserConfig.CHROME_USER_DATA_DIR,
-                        executable_path=BrowserConfig.EXECUTABLE_PATH,
-                        headless=False
-                    )
-                else:
-                    browser = await p.chromium.launch(headless=True)
-                    browser_context = await browser.new_context()
-            except Exception as e:
-                logger.error(f"Failed to launch browser: {e}")
-                run.status = "FAILED"
-                session.commit()
-                return
-
-            page = await browser_context.new_page()
-            # Anti-bot evasion
-            await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-
-            if query_or_url.startswith("http"):
-                url = query_or_url
-            else:
-                query_encoded = urllib.parse.quote(query_or_url)
-                url = f"https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=ALL&q={query_encoded}&search_type=keyword_unordered&media_type=all"
-
-            logger.info(f"Navigating to {url}")
-            await page.goto(url, wait_until="networkidle", timeout=60000)
-
-            # Human-like scrolling
-            for i in range(5):
-                scroll_amount = random.randint(300, 700)
-                await page.evaluate(f"window.scrollBy(0, {scroll_amount})")
-                await asyncio.sleep(random.uniform(0.5, 1.5))
-                if i % 3 == 0:
-                    await page.evaluate(f"window.scrollBy(0, -{random.randint(100, 200)})")
-                    await asyncio.sleep(random.uniform(0.3, 0.7))
-
-            # Extraction
-            ad_cards = page.locator('div').filter(has_text="Started running on")
-            count = await ad_cards.count()
-
-            for i in range(count):
-                card = ad_cards.nth(i)
-                try:
-                    card_text = await card.inner_text()
-                    date_match = re.search(r"Started running on (.*)", card_text)
-                    launch_date = date_match.group(1).split('\n')[0] if date_match else "Unknown"
-                    lines = card_text.split('\n')
-                    ad_text = max(lines, key=len) if lines else "No text found"
-
-                    images = await card.locator('img').all()
-                    image_links = [await img.get_attribute('src') for img in images if await img.get_attribute('src')]
-                    videos = await card.locator('video').all()
-                    video_links = [await vid.get_attribute('src') for vid in videos if await vid.get_attribute('src')]
-                    media_links_str = ", ".join(image_links + video_links)
-
-                    content_to_hash = f"{launch_date}|{ad_text}|{media_links_str}"
-                    content_hash = hashlib.md5(content_to_hash.encode()).hexdigest()
-
-                    existing = session.query(ExtractedAd).filter_by(content_hash=content_hash).first()
-                    if not existing:
-                        # Archive Media
-                        local_path = download_media(media_links_str)
-
-                        new_ad = ExtractedAd(
-                            run_id=run.id,
-                            ad_text=ad_text,
-                            launch_date=launch_date,
-                            media_links=media_links_str,
-                            local_media_path=local_path,
-                            content_hash=content_hash
-                        )
-                        session.add(new_ad)
-                except Exception as e:
-                    continue
-
-            # Perform AI Analysis before completing
-            run_ads_data = [{"text": ad.ad_text, "local_path": ad.local_media_path} for ad in run.ads]
-            if run_ads_data:
-                logger.info(f"Starting Multimodal AI analysis for run {run_id}")
-                run.analysis_text = analyze_ads_with_ai(run_ads_data)
-                session.commit()
-
-            run.status = "COMPLETED"
-            session.commit()
-    except Exception as e:
-        logger.error(f"Scrape failed for run {run_id}: {e}")
-        run.status = "FAILED"
-        run.next_retry_at = datetime.utcnow() + timedelta(minutes=15) # 15-min cooldown
-        session.commit()
-    finally:
-        if browser_context:
-            await browser_context.close()
-        if browser:
-            await browser.close()
-        session.close()
+async def scrape_tiktok_ads_task(run_id, query_or_url):
+    scraper = TikTokScraper(run_id, query_or_url)
+    await scraper.run()
 
 if st.sidebar.button("Send Latest Digest to WhatsApp"):
     if not target_phone:
