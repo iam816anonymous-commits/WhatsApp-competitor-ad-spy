@@ -5,12 +5,13 @@ import subprocess
 import sys
 import urllib.parse
 import re
+import requests
 import pandas as pd
 import logging
 import random
 import time
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 from threading import Thread
 from queue import Queue
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, ForeignKey
@@ -36,7 +37,16 @@ class ScrapeRun(Base):
     query = Column(String)
     timestamp = Column(DateTime, default=datetime.utcnow)
     status = Column(String) # PENDING, RUNNING, COMPLETED, FAILED
+    analysis_text = Column(Text)
     ads = relationship("ExtractedAd", back_populates="run", cascade="all, delete-orphan")
+
+class ScrapeSchedule(Base):
+    __tablename__ = 'scrape_schedules'
+    id = Column(Integer, primary_key=True)
+    query = Column(String)
+    frequency_hours = Column(Integer)
+    next_run_at = Column(DateTime)
+    is_active = Column(Integer, default=1)
 
 class ExtractedAd(Base):
     __tablename__ = 'extracted_ads'
@@ -62,23 +72,89 @@ def get_task_queue():
     return q
 
 def background_worker(q):
+    last_schedule_check = datetime.utcnow()
     while True:
-        task = q.get()
-        if task is None:
-            break
-        func, args = task
+        # 1. Process tasks from queue
         try:
-            # Create a new event loop for each task in this background thread
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(func(*args))
-            loop.close()
-        except Exception as e:
-            logger.error(f"Error in background task: {e}")
-        finally:
-            q.task_done()
+            # Short timeout to allow periodic schedule checks
+            task = q.get(timeout=30)
+            if task is not None:
+                func, args = task
+                try:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(func(*args))
+                    loop.close()
+                except Exception as e:
+                    logger.error(f"Error in background task: {e}")
+                finally:
+                    q.task_done()
+        except Exception: # Timeout from q.get
+            pass
+
+        # 2. Autonomous Scheduling Check (every 60s)
+        if datetime.utcnow() - last_schedule_check > timedelta(seconds=60):
+            last_schedule_check = datetime.utcnow()
+            try:
+                session = Session()
+                now = datetime.utcnow()
+                due_schedules = session.query(ScrapeSchedule).filter(
+                    ScrapeSchedule.is_active == 1,
+                    ScrapeSchedule.next_run_at <= now
+                ).all()
+
+                for sch in due_schedules:
+                    logger.info(f"Triggering scheduled scrape for: {sch.query}")
+                    # Create new run
+                    new_run = ScrapeRun(query=sch.query, status="PENDING")
+                    session.add(new_run)
+                    session.commit()
+
+                    # Enqueue
+                    q.put((scrape_meta_ads_task, (new_run.id, sch.query)))
+
+                    # Update schedule
+                    sch.next_run_at = now + timedelta(hours=sch.frequency_hours)
+                    session.commit()
+                session.close()
+            except Exception as e:
+                logger.error(f"Error in scheduler: {e}")
 
 task_queue = get_task_queue()
+
+# AI Analysis Configuration
+class AIConfig:
+    GEMINI_API_KEY = "YOUR_GEMINI_API_KEY" # Placeholder
+
+def analyze_ads_with_ai(ads_data_list):
+    if not AIConfig.GEMINI_API_KEY or AIConfig.GEMINI_API_KEY == "YOUR_GEMINI_API_KEY":
+        return "AI analysis skipped: API Key not provided."
+
+    # Aggregating ad text for analysis
+    combined_text = "\n---\n".join([f"Ad: {ad['text']}" for ad in ads_data_list[:10]]) # Limit to 10 ads for free tier
+
+    prompt = f"""
+    Analyze the following batch of Meta ads for a competitor. Provide a structured report:
+    1. Dominant Emotional Hook: What is the main angle/emotion they are testing?
+    2. Marketing Strategy: 3 bullet points summarizing their current approach.
+    3. Aggression Rating: Low, Medium, or High (based on variety and quantity).
+
+    Ads:
+    {combined_text}
+    """
+
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={AIConfig.GEMINI_API_KEY}"
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}]
+        }
+        response = requests.post(url, json=payload, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        return data['candidates'][0]['content']['parts'][0]['text']
+    except Exception as e:
+        logger.error(f"AI Analysis failed: {e}")
+        return f"AI Analysis failed: {str(e)}"
 
 # BrowserConfig placeholder for local Chrome user path
 class BrowserConfig:
@@ -98,9 +174,120 @@ for r in recent_runs:
     st.sidebar.write(f"[{r.status}] {r.query} ({r.timestamp.strftime('%H:%M:%S')})")
 session.close()
 
-# Main UI
-brand_or_url = st.text_input("Instagram Brand Name or Meta Ad Library URL", placeholder="e.g. nike or https://www.facebook.com/ads/library/...")
-target_phone = st.text_input("Target Mobile Number (with country code)", placeholder="e.g. 1234567890")
+# Dashboard and Filtering
+tabs = st.tabs(["📊 Command Center", "🕵️ Manual Scrape", "📅 Schedule Manager", "📁 Historical Data"])
+
+with tabs[0]:
+    st.subheader("System Overview")
+    session = Session()
+    total_ads = session.query(ExtractedAd).count()
+    active_schedules = session.query(ScrapeSchedule).filter_by(is_active=1).count()
+    total_runs = session.query(ScrapeRun).count()
+
+    # Calculate most active competitor
+    from sqlalchemy import func
+    most_active = session.query(ScrapeRun.query, func.count(ExtractedAd.id).label('ad_count'))\
+        .join(ExtractedAd).group_by(ScrapeRun.query).order_by(func.count(ExtractedAd.id).desc()).first()
+    most_active_str = most_active[0] if most_active else "N/A"
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Ads Tracked", total_ads)
+    col2.metric("Active Schedules", active_schedules)
+    col3.metric("Scrape Runs", total_runs)
+    col4.metric("Most Active", most_active_str)
+
+    st.markdown("### Recent AI Analytics")
+    latest_analyses = session.query(ScrapeRun).filter(ScrapeRun.analysis_text != None).order_by(ScrapeRun.timestamp.desc()).limit(3).all()
+    for run in latest_analyses:
+        with st.expander(f"Analysis for {run.query} ({run.timestamp.strftime('%Y-%m-%d')})"):
+            st.write(run.analysis_text)
+    session.close()
+
+with tabs[1]:
+    brand_or_url = st.text_input("Instagram Brand Name or Meta Ad Library URL", placeholder="e.g. nike", key="manual_q")
+    target_phone = st.text_input("Target Mobile Number", placeholder="e.g. 1234567890", key="manual_p")
+    if st.button("Start Scrape", key="manual_btn"):
+        if not brand_or_url:
+            st.error("Please enter a brand name or URL.")
+        else:
+            session = Session()
+            new_run = ScrapeRun(query=brand_or_url, status="PENDING")
+            session.add(new_run)
+            session.commit()
+            run_id = new_run.id
+            session.close()
+            task_queue.put((scrape_meta_ads_task, (run_id, brand_or_url)))
+            st.info(f"Task queued (Run ID: {run_id}).")
+
+with tabs[2]:
+    st.subheader("Automated Monitoring")
+    with st.form("new_schedule"):
+        sch_query = st.text_input("Brand to Monitor")
+        sch_freq = st.number_input("Frequency (Hours)", min_value=1, value=24)
+        if st.form_submit_button("Create Schedule"):
+            session = Session()
+            new_sch = ScrapeSchedule(
+                query=sch_query,
+                frequency_hours=sch_freq,
+                next_run_at=datetime.utcnow(),
+                is_active=1
+            )
+            session.add(new_sch)
+            session.commit()
+            session.close()
+            st.success(f"Schedule created for {sch_query}")
+
+    st.markdown("---")
+    session = Session()
+    schedules = session.query(ScrapeSchedule).all()
+    if schedules:
+        for s in schedules:
+            col1, col2, col3, col4, col5 = st.columns([1, 3, 2, 2, 2])
+            col1.write(f"#{s.id}")
+            col2.write(f"**{s.query}**")
+            col3.write(f"{s.frequency_hours}h freq")
+            col4.write("✅ Active" if s.is_active else "⏸️ Paused")
+
+            with col5:
+                if s.is_active:
+                    if st.button("Pause", key=f"pause_{s.id}"):
+                        s.is_active = 0
+                        session.commit()
+                        st.rerun()
+                else:
+                    if st.button("Resume", key=f"resume_{s.id}"):
+                        s.is_active = 1
+                        session.commit()
+                        st.rerun()
+                if st.button("Delete", key=f"del_{s.id}"):
+                    session.delete(s)
+                    session.commit()
+                    st.rerun()
+    session.close()
+
+with tabs[3]:
+    st.subheader("Historical Ad Database")
+    session = Session()
+    all_queries = [r[0] for r in session.query(ScrapeRun.query).distinct().all()]
+    filter_q = st.multiselect("Filter by Competitor", all_queries)
+    filter_text = st.text_input("Search in Ad Text")
+    date_range = st.date_input("Date Range", [])
+
+    query = session.query(ExtractedAd).join(ScrapeRun)
+    if filter_q:
+        query = query.filter(ScrapeRun.query.in_(filter_q))
+    if filter_text:
+        query = query.filter(ExtractedAd.ad_text.like(f"%{filter_text}%"))
+    if len(date_range) == 2:
+        start_date = datetime.combine(date_range[0], datetime.min.time())
+        end_date = datetime.combine(date_range[1], datetime.max.time())
+        query = query.filter(ScrapeRun.timestamp.between(start_date, end_date))
+
+    historical_ads = query.order_by(ExtractedAd.id.desc()).limit(100).all()
+    if historical_ads:
+        df_data = [{"Run": ad.run.query, "Date": ad.launch_date, "Text": ad.ad_text} for ad in historical_ads]
+        st.dataframe(pd.DataFrame(df_data), use_container_width=True)
+    session.close()
 
 async def scrape_meta_ads_task(run_id, query_or_url):
     session = Session()
@@ -188,6 +375,13 @@ async def scrape_meta_ads_task(run_id, query_or_url):
                 except Exception as e:
                     continue
 
+            # Perform AI Analysis before completing
+            run_ads_data = [{"text": ad.ad_text} for ad in run.ads]
+            if run_ads_data:
+                logger.info(f"Starting AI analysis for run {run_id}")
+                run.analysis_text = analyze_ads_with_ai(run_ads_data)
+                session.commit()
+
             run.status = "COMPLETED"
             session.commit()
     except Exception as e:
@@ -201,40 +395,9 @@ async def scrape_meta_ads_task(run_id, query_or_url):
             await browser.close()
         session.close()
 
-if st.button("Start Scrape"):
-    if not brand_or_url:
-        st.error("Please enter a brand name or URL.")
-    else:
-        session = Session()
-        new_run = ScrapeRun(query=brand_or_url, status="PENDING")
-        session.add(new_run)
-        session.commit()
-        run_id = new_run.id
-        session.close()
-
-        task_queue.put((scrape_meta_ads_task, (run_id, brand_or_url)))
-        st.info(f"Task queued (Run ID: {run_id}). Check Job History for status.")
-
-# Display latest results
-session = Session()
-latest_ads = session.query(ExtractedAd).order_by(ExtractedAd.id.desc()).limit(20).all()
-if latest_ads:
-    st.subheader("Latest Extracted Ads")
-    df_data = []
-    for ad in latest_ads:
-        df_data.append({
-            "Run": ad.run.query if ad.run else "Unknown",
-            "Date": ad.launch_date,
-            "Text": ad.ad_text,
-            "Media": ad.media_links
-        })
-    st.dataframe(pd.DataFrame(df_data), use_container_width=True)
-
-if st.button("Send to WhatsApp"):
+if st.sidebar.button("Send Latest Digest to WhatsApp"):
     if not target_phone:
-        st.error("Please enter a target phone number.")
+        st.error("Please enter a target phone number in the Manual Scrape tab.")
     else:
-        # Launch WhatsApp automation as a separate process
         st.info("Triggering WhatsApp automation process...")
         subprocess.Popen([sys.executable, "whatsapp_automation.py", target_phone, BrowserConfig.CHROME_USER_DATA_DIR])
-session.close()

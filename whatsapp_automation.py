@@ -17,28 +17,29 @@ logging.basicConfig(
 logger = logging.getLogger("WhatsAppAutomation")
 
 async def send_whatsapp_message(phone, user_data_dir=None):
-    # Check SQLite for ad summaries
-    summary = ""
+    # Upgrade 3: High-Signal Intelligence Digest
+    digest = ""
     try:
         conn = sqlite3.connect('ad_spy.db')
         cursor = conn.cursor()
-        # Fetch ads from the most recent completed run
+        # Fetch AI analysis from the most recent completed run
         cursor.execute("""
-            SELECT ad_text, launch_date
-            FROM extracted_ads
-            JOIN scrape_runs ON extracted_ads.run_id = scrape_runs.id
-            WHERE scrape_runs.status = 'COMPLETED'
-            ORDER BY scrape_runs.timestamp DESC
-            LIMIT 5
+            SELECT query, analysis_text, timestamp
+            FROM scrape_runs
+            WHERE status = 'COMPLETED'
+            ORDER BY timestamp DESC
+            LIMIT 1
         """)
-        rows = cursor.fetchall()
-        if not rows:
-            logger.warning("No completed scrape runs found in database.")
+        row = cursor.fetchone()
+        if not row or not row[1]:
+            logger.warning("No completed scrape runs with AI analysis found.")
             return
 
-        summary = "Competitor Ad Spy Summary (Latest Ads):\n\n"
-        for ad_text, launch_date in rows:
-            summary += f"- {launch_date}: {ad_text[:100]}...\n\n"
+        query, analysis, timestamp = row
+        digest = f"*🕵️ Ad Intelligence Digest: {query}*\n"
+        digest += f"📅 _Generated: {timestamp}_\n\n"
+        digest += f"📈 *Market Intelligence:*\n{analysis}\n\n"
+        digest += "🚀 _Sent by Competitor Ad Spy Agent_"
         conn.close()
     except Exception as e:
         logger.error(f"Database error: {e}")
@@ -65,7 +66,7 @@ async def send_whatsapp_message(phone, user_data_dir=None):
 
             page = await browser_context.new_page()
 
-            encoded_message = urllib.parse.quote(summary)
+            encoded_message = urllib.parse.quote(digest)
             url = f"https://web.whatsapp.com/send?phone={phone}&text={encoded_message}"
 
             logger.info(f"Navigating to: {url}")
