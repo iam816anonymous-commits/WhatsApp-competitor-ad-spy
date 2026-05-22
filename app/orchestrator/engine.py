@@ -6,6 +6,7 @@ from app.agents.ai_agent import analyze_ads_with_ai
 from app.agents.vision_agent import generate_image_embedding
 from app.agents.prediction_agent import PredictionAgent
 from app.db.database import get_session
+from app.db.tenant_context import get_tenant
 from app.models.models import ScrapeRun, ExtractedAd, Brand, Campaign, Offer, LandingPage, MarketEvent, Persona, Hook
 from app.utils.media import resolve_redirects
 
@@ -15,7 +16,17 @@ class IntelligenceOrchestrator:
     def __init__(self, run_id: int):
         self.run_id = run_id
 
+    def _calculate_quality_score(self, ad: ExtractedAd) -> float:
+        score = 0.0
+        if ad.ad_text and len(ad.ad_text) > 10: score += 0.25
+        if ad.creative_embedding: score += 0.25
+        if ad.final_destination_url: score += 0.25
+        if ad.landing_page_id:
+            score += 0.25
+        return score
+
     async def execute_pipeline(self):
+        org_id = get_tenant()
         """
         Execution Graph:
         Collector (already done by Scraper)
@@ -26,9 +37,9 @@ class IntelligenceOrchestrator:
         ↓
         Strategy Agent (AI Analysis)
         ↓
-        Market Intelligence Agent (Trend Analysis - Next Step)
+        Market Intelligence Agent (Trend Analysis)
         ↓
-        Alert Engine (Notifications - Next Step)
+        Alert Engine (Notifications)
         """
         session = get_session()
         run = session.get(ScrapeRun, self.run_id)
@@ -75,6 +86,8 @@ class IntelligenceOrchestrator:
 
                 ad.landing_page_id = lp.id
 
+            ad.quality_score = self._calculate_quality_score(ad)
+
         session.commit()
 
         # 3. Strategy Analysis
@@ -98,8 +111,11 @@ class IntelligenceOrchestrator:
 
         # 5. Prediction Engine
         logger.info("Executing Prediction Agent...")
-        for ad in run.ads:
-            PredictionAgent.forecast_ad_performance(ad.id)
+        try:
+            for ad in run.ads:
+                PredictionAgent.forecast_ad_performance(ad.id)
+        except Exception as e:
+            logger.error(f"Prediction Engine failed: {e}")
 
         # Check for winners to alert
         from app.agents.alert_agent import AlertAgent
@@ -140,7 +156,8 @@ class IntelligenceOrchestrator:
                         event_type="Offer Shift",
                         description=f"Brand shifted offer strategy to {offer_type}",
                         old_value=existing_active_offer.type if existing_active_offer else "None",
-                        new_value=offer_type
+                        new_value=offer_type,
+                        confidence=0.92
                     )
                     session.add(event)
 

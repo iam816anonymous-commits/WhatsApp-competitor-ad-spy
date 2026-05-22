@@ -49,6 +49,15 @@ class OrganizationUsage(Base):
     month: Mapped[str] = mapped_column(String) # e.g. "2023-10"
     total_spend: Mapped[float] = mapped_column(Float, default=0.0)
 
+class AuditLog(Base):
+    __tablename__ = 'audit_logs'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    org_id: Mapped[Optional[int]] = mapped_column(ForeignKey('organizations.id'), nullable=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey('users.id'), nullable=True)
+    action: Mapped[str] = mapped_column(String)
+    details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
 class Brand(Base):
     __tablename__ = 'brands'
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -94,6 +103,7 @@ class MarketEvent(Base):
     description: Mapped[str] = mapped_column(Text)
     old_value: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     new_value: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     timestamp: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
     brand: Mapped["Brand"] = relationship("Brand", back_populates="events")
@@ -211,6 +221,7 @@ class ExtractedAd(Base):
 
     # Phase 3 Visual Intelligence
     creative_embedding: Mapped[Optional[bytes]] = mapped_column(nullable=True)
+    quality_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     run: Mapped["ScrapeRun"] = relationship("ScrapeRun", back_populates="ads")
     brand: Mapped[Optional["Brand"]] = relationship("Brand", back_populates="ads")

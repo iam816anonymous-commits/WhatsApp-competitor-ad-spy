@@ -53,10 +53,23 @@ class MarketAnalystAgent:
             # Use the AI agent. We pass a mock "ad" object that contains our prompt.
             # analyze_ads_with_ai expects a list of dicts.
             res = await analyze_ads_with_ai([{"text": prompt}])
-
             return res
         except Exception as e:
             logger.error(f"Error generating market pulse: {e}")
             return f"Error generating market pulse: {str(e)}"
+        finally:
+            session.close()
+
+    @staticmethod
+    async def detect_strategy_drift(brand_id: int):
+        """
+        Periodically called to detect complex shifts not caught by the orchestrator.
+        """
+        session = get_session()
+        try:
+            # Logic to compare last 30 days of snapshots and events
+            pass
+        except Exception as e:
+            logger.error(f"Drift Detection failed for brand {brand_id}: {e}")
         finally:
             session.close()

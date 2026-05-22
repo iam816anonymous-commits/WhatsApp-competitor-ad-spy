@@ -73,9 +73,19 @@ def render_ui(task_queue):
         session.close()
 
     with tabs[4]:
-        st.subheader("System Health")
+        st.subheader("Enterprise System Health")
+        from app.utils.metrics import MetricsEngine
+        stats = MetricsEngine.get_stats()
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("P95 Latency", f"{stats['p95_ms']}ms")
+        col2.metric("Failure Rate", f"{stats['failure_rate_pct']:.2f}%")
+        col3.metric("Tasks Completed", stats['total_tasks'])
+        col4.metric("Pred. Drift", f"{stats['prediction_drift']*100}%")
+
+        st.divider()
         worker_alive = any("background_worker" in str(t) or t.name == "Thread-1" for t in threading.enumerate())
-        st.info(f"Worker: {'ALIVE' if worker_alive else 'DEAD'}")
+        st.info(f"Worker Status: {'ONLINE' if worker_alive else 'OFFLINE'}")
         if os.path.exists("agent.log"):
             with open("agent.log", "r") as f:
                 st.code("".join(f.readlines()[-20:]))
