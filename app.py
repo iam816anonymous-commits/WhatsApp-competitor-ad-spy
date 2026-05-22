@@ -217,7 +217,7 @@ task_queue = get_task_queue()
 
 # AI Analysis Configuration
 class AIConfig:
-    GEMINI_API_KEY: str = "YOUR_GEMINI_API_KEY" # Placeholder
+    GEMINI_API_KEY: Any = "YOUR_GEMINI_API_KEY" # Placeholder
 
 def analyze_ads_with_ai(ads_data_list):
     if not AIConfig.GEMINI_API_KEY or AIConfig.GEMINI_API_KEY == "YOUR_GEMINI_API_KEY":
@@ -309,9 +309,11 @@ class BaseScraper(ABC):
             async with async_playwright() as p:
                 try:
                     await self.initialize_browser(p)
-                    if not self.context:
-                        raise Exception("Browser context not initialized")
+                    # Narrow type for Pylance and safety check
                     ctx = self.context
+                    if not ctx:
+                        raise Exception("Browser context not initialized")
+
                     page = await ctx.new_page()
                     # Anti-bot evasion
                     await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
@@ -348,17 +350,19 @@ class BaseScraper(ABC):
                     run.status = "COMPLETED"
                     session.commit()
                 finally:
-                    # Inner finally for browser objects within the playwright session
-                    try:
-                        if self.context:
-                            await self.context.close()
-                    except:
-                        pass
-                    try:
-                        if self.browser:
-                            await self.browser.close()
-                    except:
-                        pass
+                    # Defensive closure with local variable narrowing
+                    c = self.context
+                    if c:
+                        try:
+                            await c.close()
+                        except:
+                            pass
+                    b = self.browser
+                    if b:
+                        try:
+                            await b.close()
+                        except:
+                            pass
         except Exception as e:
             logger.error(f"Scrape failed for run {self.run_id}: {e}")
             run.status = "FAILED"
@@ -377,8 +381,10 @@ class MetaScraper(BaseScraper):
             )
         else:
             self.browser = await playwright.chromium.launch(headless=True)
-            if self.browser:
-                self.context = await self.browser.new_context()
+            # Narrow type for Pylance
+            br = self.browser
+            if br:
+                self.context = await br.new_context()
 
     async def execute_scrape(self, page):
         if self.query_or_url.startswith("http"):
@@ -464,8 +470,10 @@ class MetaScraper(BaseScraper):
 class TikTokScraper(BaseScraper):
     async def initialize_browser(self, playwright):
         self.browser = await playwright.chromium.launch(headless=True)
-        if self.browser:
-            self.context = await self.browser.new_context()
+        # Narrow type for Pylance
+        br = self.browser
+        if br:
+            self.context = await br.new_context()
 
     async def execute_scrape(self, page):
         # Stub for TikTok Commercial Content Library
