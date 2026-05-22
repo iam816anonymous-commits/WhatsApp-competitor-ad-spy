@@ -1,11 +1,13 @@
 import sys
 import asyncio
+import os
 from playwright.async_api import async_playwright
 import urllib.parse
-import sqlite3
 import logging
+from datetime import datetime, UTC
 
-# Setup Logging
+from app.db.database import get_session
+from app.models.models import ScrapeRun, ExtractedAd
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -17,64 +19,47 @@ logging.basicConfig(
 logger = logging.getLogger("WhatsAppAutomation")
 
 async def send_whatsapp_message(phone, user_data_dir=None):
-    # Upgrade 2: High-Signal Winning Alert Logic
     digest = ""
     try:
-        conn = sqlite3.connect('ad_spy.db')
-        cursor = conn.cursor()
+        session = get_session()
+        run = session.query(ScrapeRun).filter(ScrapeRun.status == 'COMPLETED').order_by(ScrapeRun.timestamp.desc()).first()
 
-        # 1. Fetch AI analysis from the most recent completed run
-        cursor.execute("""
-            SELECT id, query, analysis_text, timestamp
-            FROM scrape_runs
-            WHERE status = 'COMPLETED'
-            ORDER BY timestamp DESC
-            LIMIT 1
-        """)
-        row = cursor.fetchone()
-        if not row:
+        if not run:
             logger.warning("No completed scrape runs found.")
+            session.close()
             return
 
-        run_id, query, analysis, timestamp = row
-
-        # 2. Check for "Winning Core Assets" (Ad Longevity > 21 days)
-        # In a real scenario, we'd compare dates. Here we simulate looking for ads that transitioned.
-        cursor.execute("""
-            SELECT ad_text, launch_date FROM extracted_ads
-            WHERE run_id = ?
-        """, (run_id,))
-        ads = cursor.fetchall()
+        query = run.query
+        analysis = run.analysis_text
+        timestamp = run.timestamp
 
         winners = []
-        from datetime import datetime
-        for ad_text, launch_date_str in ads:
+        for ad in run.ads:
             try:
-                # Meta format: "May 22, 2024"
-                launch_date = datetime.strptime(launch_date_str, "%b %d, %Y")
-                days = (datetime.utcnow() - launch_date).days
+                launch_date = datetime.strptime(ad.launch_date, "%b %d, %Y")
+                days = (datetime.now(UTC).replace(tzinfo=None) - launch_date).days
                 if days > 21:
-                    winners.append(ad_text[:100] + "...")
+                    winners.append(ad.ad_text[:100] + "...")
             except:
                 continue
 
-        # Notification Fatigue Filter: Only send if there's a winner or a fresh analysis
         if not winners and "Winning" not in str(analysis):
-             logger.info("No high-signal 'Winning' assets found. Skipping notification to avoid fatigue.")
-             return # Alert specifically for Winning Core Assets
+             logger.info("No high-signal 'Winning' assets found. Skipping notification.")
+             session.close()
+             return
 
-        digest = f"*🏆 WINNING AD ALERT: {query}*\n" if winners else f"*🕵️ Ad Intelligence Digest: {query}*\n"
+        digest = f"*🏆 WINNING AD ALERT: {query}*\n" if winners else f"*🕵️ Ad Intelligence OS: {query}*\n"
         digest += f"📅 _Generated: {timestamp}_\n\n"
 
         if winners:
-            digest += "🔥 *Winning Core Assets Detected (Active > 21 Days):*\n"
+            digest += "🔥 *Winning Assets (> 21 Days):*\n"
             for w in winners[:3]:
                 digest += f"• {w}\n"
             digest += "\n"
 
-        digest += f"📈 *Market Intelligence:*\n{analysis}\n\n"
-        digest += "🚀 _Sent by Competitor Ad Spy Agent_"
-        conn.close()
+        digest += f"📈 *Intelligence:*\n{analysis[:1000]}\n\n"
+        digest += "🚀 _Sent by AdSpy Intelligence OS_"
+        session.close()
     except Exception as e:
         logger.error(f"Database error: {e}")
         return

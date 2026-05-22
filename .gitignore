@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+ad_spy.db
+agent.log
+streamlit.log
+media_archive/
+migrations/

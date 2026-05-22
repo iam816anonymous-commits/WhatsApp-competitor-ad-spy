@@ -7,3 +7,9 @@ openpyxl
 requests
 google-generativeai
 python-dotenv
+aiohttp
+alembic
+pillow
+sentence-transformers
+psycopg2-binary
+torch
