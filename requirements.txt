@@ -1,0 +1,9 @@
+streamlit
+playwright
+playwright-stealth
+sqlalchemy
+pandas
+openpyxl
+requests
+google-generativeai
+python-dotenv
