@@ -15,7 +15,7 @@ import random
 import time
 import hashlib
 import base64
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from threading import Thread
 from queue import Queue
 from abc import ABC, abstractmethod
@@ -41,7 +41,7 @@ class ScrapeRun(Base):
     __tablename__ = 'scrape_runs'
     id: Mapped[int] = mapped_column(primary_key=True)
     query: Mapped[str] = mapped_column(String)
-    timestamp: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    timestamp: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
     status: Mapped[str] = mapped_column(String) # PENDING, RUNNING, COMPLETED, FAILED
     analysis_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     retry_count: Mapped[int] = mapped_column(default=0)
@@ -67,7 +67,7 @@ class ExtractedAd(Base):
     content_hash: Mapped[str] = mapped_column(unique=True)
     final_destination_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     funnel_type: Mapped[Optional[str]] = mapped_column(nullable=True)
-    last_seen: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    last_seen: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
     run: Mapped["ScrapeRun"] = relationship("ScrapeRun", back_populates="ads")
 
 engine = create_engine('sqlite:///ad_spy.db', connect_args={"check_same_thread": False})
@@ -80,7 +80,7 @@ os.makedirs("media_archive", exist_ok=True)
 def get_ad_longevity_category(launch_date_str):
     try:
         launch_date = datetime.strptime(launch_date_str, "%b %d, %Y")
-        days = (datetime.utcnow() - launch_date).days
+        days = (datetime.now(UTC) - launch_date).days
         if days > 21:
             return "Winning Core Asset", days
         elif days > 7:
@@ -124,8 +124,8 @@ def get_task_queue():
     return q
 
 def background_worker(q):
-    last_schedule_check = datetime.utcnow()
-    last_maintenance_check = datetime.utcnow()
+    last_schedule_check = datetime.now(UTC)
+    last_maintenance_check = datetime.now(UTC)
     while True:
         # 1. Process tasks from queue
         try:
@@ -146,11 +146,11 @@ def background_worker(q):
             pass
 
         # 2. Autonomous Scheduling and Recovery Check (every 60s)
-        if datetime.utcnow() - last_schedule_check > timedelta(seconds=60):
-            last_schedule_check = datetime.utcnow()
+        if datetime.now(UTC) - last_schedule_check > timedelta(seconds=60):
+            last_schedule_check = datetime.now(UTC)
             try:
                 session = Session()
-                now = datetime.utcnow()
+                now = datetime.now(UTC)
 
                 # Check for schedules
                 due_schedules = session.query(ScrapeSchedule).filter(
@@ -176,7 +176,7 @@ def background_worker(q):
                 failed_runs = session.query(ScrapeRun).filter(
                     ScrapeRun.status == "FAILED",
                     ScrapeRun.retry_count < 1, # Only retry once as requested
-                    ScrapeRun.next_retry_at <= now
+                    ScrapeRun.next_retry_at <= now.replace(tzinfo=None)
                 ).all()
 
                 for run in failed_runs:
@@ -191,12 +191,12 @@ def background_worker(q):
                 logger.error(f"Error in scheduler/recovery: {e}")
 
         # 3. Intelligent Auto-Pruning & Maintenance (every 24h)
-        if datetime.utcnow() - last_maintenance_check > timedelta(hours=24):
-            last_maintenance_check = datetime.utcnow()
+        if datetime.now(UTC) - last_maintenance_check > timedelta(hours=24):
+            last_maintenance_check = datetime.now(UTC)
             try:
                 session = Session()
                 # Prune media for ads not seen in > 90 days
-                prune_threshold = datetime.utcnow() - timedelta(days=90)
+                prune_threshold = datetime.now(UTC) - timedelta(days=90)
                 old_ads = session.query(ExtractedAd).filter(
                     ExtractedAd.last_seen < prune_threshold,
                     ExtractedAd.local_media_path != None
@@ -296,7 +296,7 @@ class BaseScraper(ABC):
 
     async def run(self):
         session = Session()
-        run = session.query(ScrapeRun).get(self.run_id)
+        run = session.get(ScrapeRun, self.run_id)
         if not run:
             session.close()
             return
@@ -366,7 +366,8 @@ class BaseScraper(ABC):
         except Exception as e:
             logger.error(f"Scrape failed for run {self.run_id}: {e}")
             run.status = "FAILED"
-            run.next_retry_at = datetime.utcnow() + timedelta(minutes=15)
+            # Ensure naive for DB compatibility if needed, or consistent aware
+            run.next_retry_at = datetime.now(UTC).replace(tzinfo=None) + timedelta(minutes=15)
             session.commit()
         finally:
             session.close()
@@ -408,7 +409,7 @@ class MetaScraper(BaseScraper):
         ad_cards = page.locator('div').filter(has_text="Started running on")
         count = await ad_cards.count()
         session = Session()
-        run = session.query(ScrapeRun).get(self.run_id)
+        run = session.get(ScrapeRun, self.run_id)
         if not run:
              session.close()
              return
@@ -425,7 +426,7 @@ class MetaScraper(BaseScraper):
                     # Meta format is often "May 22, 2024"
                     launch_date_parsed = datetime.strptime(launch_date_str, "%b %d, %Y")
                 except:
-                    launch_date_parsed = datetime.utcnow()
+                    launch_date_parsed = datetime.now(UTC)
 
                 lines = card_text.split('\n')
                 ad_text = max(lines, key=len) if lines else "No text found"
@@ -455,12 +456,13 @@ class MetaScraper(BaseScraper):
                         local_media_path=local_path,
                         content_hash=content_hash,
                         final_destination_url=final_url,
-                        last_seen=datetime.utcnow()
+                        last_seen=datetime.now(UTC)
                     )
                     session.add(new_ad)
                 else:
-                    existing.last_seen = datetime.utcnow()
-                    if final_url: existing.final_destination_url = final_url
+                    existing.last_seen = datetime.now(UTC)
+                    if final_url:
+                        existing.final_destination_url = final_url
                 session.commit()
             except Exception as e:
                 logger.error(f"Error parsing ad card: {e}")
@@ -529,8 +531,8 @@ with tabs[0]:
 
     # Calculate most active competitor
     from sqlalchemy import func
-    most_active = session.query(ScrapeRun.query, func.count(ExtractedAd.id))\
-        .join(ExtractedAd).group_by(ScrapeRun.query).order_by(desc(func.count(ExtractedAd.id))).first()
+    most_active = session.query(getattr(ScrapeRun, 'query'), func.count(ExtractedAd.id))\
+        .join(ExtractedAd).group_by(getattr(ScrapeRun, 'query')).order_by(desc(func.count(ExtractedAd.id))).first()
     most_active_str = str(most_active[0]) if most_active else "N/A"
 
     col1, col2, col3, col4 = st.columns(4)
@@ -563,12 +565,12 @@ with tabs[1]:
             st.error("Please enter a brand name or URL.")
         else:
             session = Session()
-            new_run = ScrapeRun(query=brand_or_url, status="PENDING")
+            new_run = ScrapeRun(query=str(brand_or_url), status="PENDING")
             session.add(new_run)
             session.commit()
-            run_id = new_run.id
+            run_id = int(new_run.id)
             session.close()
-            task_queue.put((scrape_meta_ads_task, (run_id, brand_or_url)))
+            task_queue.put((scrape_meta_ads_task, (run_id, str(brand_or_url))))
             st.info(f"Task queued (Run ID: {run_id}).")
 
 with tabs[2]:
@@ -581,7 +583,7 @@ with tabs[2]:
             new_sch = ScrapeSchedule(
                 query=sch_query,
                 frequency_hours=sch_freq,
-                next_run_at=datetime.utcnow(),
+                next_run_at=datetime.now(UTC).replace(tzinfo=None),
                 is_active=1
             )
             session.add(new_sch)
