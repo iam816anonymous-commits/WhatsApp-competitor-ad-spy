@@ -5,16 +5,18 @@ import subprocess
 import sys
 import urllib.parse
 import re
+import os
 import requests
 import pandas as pd
 import logging
 import random
 import time
 import hashlib
+import base64
 from datetime import datetime, timedelta
 from threading import Thread
 from queue import Queue
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, ForeignKey, func
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
 # Setup Logging
@@ -38,6 +40,8 @@ class ScrapeRun(Base):
     timestamp = Column(DateTime, default=datetime.utcnow)
     status = Column(String) # PENDING, RUNNING, COMPLETED, FAILED
     analysis_text = Column(Text)
+    retry_count = Column(Integer, default=0)
+    next_retry_at = Column(DateTime)
     ads = relationship("ExtractedAd", back_populates="run", cascade="all, delete-orphan")
 
 class ScrapeSchedule(Base):
@@ -55,12 +59,40 @@ class ExtractedAd(Base):
     ad_text = Column(Text)
     launch_date = Column(String)
     media_links = Column(Text)
+    local_media_path = Column(String)
     content_hash = Column(String, unique=True)
     run = relationship("ScrapeRun", back_populates="ads")
 
 engine = create_engine('sqlite:///ad_spy.db', connect_args={"check_same_thread": False})
 Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
+
+# Media Archive setup
+os.makedirs("media_archive", exist_ok=True)
+
+def download_media(url):
+    if not url:
+        return None
+    try:
+        # Some URLs are comma separated strings in our DB
+        first_url = url.split(',')[0].strip()
+        if not first_url.startswith('http'):
+            return None
+
+        response = requests.get(first_url, timeout=10)
+        if response.status_code == 200:
+            content = response.content
+            h = hashlib.sha256(content).hexdigest()
+            ext = 'jpg' # Default extension
+            filename = f"{h}.{ext}"
+            filepath = os.path.join("media_archive", filename)
+
+            with open(filepath, "wb") as f:
+                f.write(content)
+            return filepath
+    except Exception as e:
+        logger.error(f"Media download failed: {e}")
+    return None
 
 # Task Queue and Worker using Streamlit's cache_resource for persistence
 @st.cache_resource
@@ -92,12 +124,14 @@ def background_worker(q):
         except Exception: # Timeout from q.get
             pass
 
-        # 2. Autonomous Scheduling Check (every 60s)
+        # 2. Autonomous Scheduling and Recovery Check (every 60s)
         if datetime.utcnow() - last_schedule_check > timedelta(seconds=60):
             last_schedule_check = datetime.utcnow()
             try:
                 session = Session()
                 now = datetime.utcnow()
+
+                # Check for schedules
                 due_schedules = session.query(ScrapeSchedule).filter(
                     ScrapeSchedule.is_active == 1,
                     ScrapeSchedule.next_run_at <= now
@@ -116,9 +150,24 @@ def background_worker(q):
                     # Update schedule
                     sch.next_run_at = now + timedelta(hours=sch.frequency_hours)
                     session.commit()
+
+                # Recovery Logic: Check for failed runs with retries remaining
+                failed_runs = session.query(ScrapeRun).filter(
+                    ScrapeRun.status == "FAILED",
+                    ScrapeRun.retry_count < 1, # Only retry once as requested
+                    ScrapeRun.next_retry_at <= now
+                ).all()
+
+                for run in failed_runs:
+                    logger.info(f"Retrying failed run {run.id} for query: {run.query}")
+                    run.status = "PENDING"
+                    run.retry_count += 1
+                    session.commit()
+                    q.put((scrape_meta_ads_task, (run.id, run.query)))
+
                 session.close()
             except Exception as e:
-                logger.error(f"Error in scheduler: {e}")
+                logger.error(f"Error in scheduler/recovery: {e}")
 
 task_queue = get_task_queue()
 
@@ -130,30 +179,49 @@ def analyze_ads_with_ai(ads_data_list):
     if not AIConfig.GEMINI_API_KEY or AIConfig.GEMINI_API_KEY == "YOUR_GEMINI_API_KEY":
         return "AI analysis skipped: API Key not provided."
 
-    # Aggregating ad text for analysis
-    combined_text = "\n---\n".join([f"Ad: {ad['text']}" for ad in ads_data_list[:10]]) # Limit to 10 ads for free tier
+    parts = []
+    text_summary = ""
+    for i, ad in enumerate(ads_data_list[:5]): # Limit to 5 for multimodal/token efficiency
+        text_summary += f"Ad {i+1} Text: {ad['text']}\n"
+        if ad.get('local_path') and os.path.exists(ad['local_path']):
+            try:
+                with open(ad['local_path'], "rb") as img_file:
+                    img_data = base64.b64encode(img_file.read()).decode('utf-8')
+                    parts.append({
+                        "inline_data": {
+                            "mime_type": "image/jpeg",
+                            "data": img_data
+                        }
+                    })
+            except Exception:
+                pass
 
     prompt = f"""
-    Analyze the following batch of Meta ads for a competitor. Provide a structured report:
-    1. Dominant Emotional Hook: What is the main angle/emotion they are testing?
-    2. Marketing Strategy: 3 bullet points summarizing their current approach.
-    3. Aggression Rating: Low, Medium, or High (based on variety and quantity).
+    Analyze these Meta ads (text and accompanying images).
+    Perform OCR on any text embedded in the graphics.
+    Provide a structured report:
+    1. Visual Strategy & OCR: What text is in the images? What colors/styles are used?
+    2. Dominant Emotional Hook: What is the main angle they are testing?
+    3. Marketing Strategy: 3 bullet points summarizing their approach.
+    4. Aggression Rating: Low, Medium, or High.
 
-    Ads:
-    {combined_text}
+    Ads Context:
+    {text_summary}
     """
+    parts.append({"text": prompt})
 
     try:
+        # Using gemini-2.0-flash for multimodal capabilities as requested
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={AIConfig.GEMINI_API_KEY}"
         payload = {
-            "contents": [{"parts": [{"text": prompt}]}]
+            "contents": [{"parts": parts}]
         }
-        response = requests.post(url, json=payload, timeout=30)
+        response = requests.post(url, json=payload, timeout=45)
         response.raise_for_status()
         data = response.json()
         return data['candidates'][0]['content']['parts'][0]['text']
     except Exception as e:
-        logger.error(f"AI Analysis failed: {e}")
+        logger.error(f"AI Multimodal Analysis failed: {e}")
         return f"AI Analysis failed: {str(e)}"
 
 # BrowserConfig placeholder for local Chrome user path
@@ -175,7 +243,7 @@ for r in recent_runs:
 session.close()
 
 # Dashboard and Filtering
-tabs = st.tabs(["📊 Command Center", "🕵️ Manual Scrape", "📅 Schedule Manager", "📁 Historical Data"])
+tabs = st.tabs(["📊 Command Center", "🕵️ Manual Scrape", "📅 Schedule Manager", "📁 Historical Data", "🩺 System Health"])
 
 with tabs[0]:
     st.subheader("System Overview")
@@ -285,8 +353,74 @@ with tabs[3]:
 
     historical_ads = query.order_by(ExtractedAd.id.desc()).limit(100).all()
     if historical_ads:
-        df_data = [{"Run": ad.run.query, "Date": ad.launch_date, "Text": ad.ad_text} for ad in historical_ads]
-        st.dataframe(pd.DataFrame(df_data), use_container_width=True)
+        df_data = []
+        for ad in historical_ads:
+            df_data.append({
+                "ID": ad.id,
+                "Run": ad.run.query,
+                "Date": ad.launch_date,
+                "Text": ad.ad_text,
+                "Local Media": ad.local_media_path,
+                "Analysis": ad.run.analysis_text
+            })
+        df = pd.DataFrame(df_data)
+        st.dataframe(df, use_container_width=True)
+
+        st.markdown("### 🖼️ Archived Creative Gallery")
+        img_cols = st.columns(4)
+        img_idx = 0
+        for ad in historical_ads:
+            if ad.local_media_path and os.path.exists(ad.local_media_path):
+                with img_cols[img_idx % 4]:
+                    st.image(ad.local_media_path, caption=f"Ad #{ad.id} from {ad.run.query}")
+                img_idx += 1
+            if img_idx >= 12: break # Show top 12
+
+        # Export Insights
+        import io
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Ad Intelligence')
+
+        st.download_button(
+            label="📥 Export Insights (Excel)",
+            data=buffer,
+            file_name=f"ad_intelligence_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    session.close()
+
+# Use anchor for tab navigation if click fails
+with tabs[4]:
+    st.subheader("System Health & Observability", anchor="health_tab")
+
+    # 1. Thread Status
+    import threading
+    st.markdown("#### Background Services")
+    worker_alive = "ALIVE" if any("background_worker" in str(t) or t.name == "Thread-1" for t in threading.enumerate()) else "DEAD"
+    st.info(f"Main Executor Thread: **{worker_alive}**")
+
+    # 2. Error Tracker
+    st.markdown("#### Error Rate by Competitor")
+    session = Session()
+    error_stats = session.query(
+        ScrapeRun.query,
+        ScrapeRun.status,
+        func.count(ScrapeRun.id)
+    ).group_by(ScrapeRun.query, ScrapeRun.status).all()
+
+    if error_stats:
+        err_df = pd.DataFrame(error_stats, columns=["Competitor", "Status", "Count"])
+        st.table(err_df)
+
+    # 3. Log Reader
+    st.markdown("#### Recent Activity (agent.log)")
+    if os.path.exists("agent.log"):
+        with open("agent.log", "r") as f:
+            lines = f.readlines()
+            st.code("".join(lines[-20:]))
+    else:
+        st.write("No log file found yet.")
     session.close()
 
 async def scrape_meta_ads_task(run_id, query_or_url):
@@ -364,11 +498,15 @@ async def scrape_meta_ads_task(run_id, query_or_url):
 
                     existing = session.query(ExtractedAd).filter_by(content_hash=content_hash).first()
                     if not existing:
+                        # Archive Media
+                        local_path = download_media(media_links_str)
+
                         new_ad = ExtractedAd(
                             run_id=run.id,
                             ad_text=ad_text,
                             launch_date=launch_date,
                             media_links=media_links_str,
+                            local_media_path=local_path,
                             content_hash=content_hash
                         )
                         session.add(new_ad)
@@ -376,9 +514,9 @@ async def scrape_meta_ads_task(run_id, query_or_url):
                     continue
 
             # Perform AI Analysis before completing
-            run_ads_data = [{"text": ad.ad_text} for ad in run.ads]
+            run_ads_data = [{"text": ad.ad_text, "local_path": ad.local_media_path} for ad in run.ads]
             if run_ads_data:
-                logger.info(f"Starting AI analysis for run {run_id}")
+                logger.info(f"Starting Multimodal AI analysis for run {run_id}")
                 run.analysis_text = analyze_ads_with_ai(run_ads_data)
                 session.commit()
 
@@ -387,6 +525,7 @@ async def scrape_meta_ads_task(run_id, query_or_url):
     except Exception as e:
         logger.error(f"Scrape failed for run {run_id}: {e}")
         run.status = "FAILED"
+        run.next_retry_at = datetime.utcnow() + timedelta(minutes=15) # 15-min cooldown
         session.commit()
     finally:
         if browser_context:
