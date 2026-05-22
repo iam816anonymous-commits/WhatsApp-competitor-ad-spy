@@ -450,6 +450,14 @@ def resolve_redirects(url):
         logger.error(f"URL Resolution failed for {url}: {e}")
         return url
 
+async def scrape_meta_ads_task(run_id, query_or_url):
+    scraper = MetaScraper(run_id, query_or_url)
+    await scraper.run()
+
+async def scrape_tiktok_ads_task(run_id, query_or_url):
+    scraper = TikTokScraper(run_id, query_or_url)
+    await scraper.run()
+
 st.set_page_config(page_title="Competitor Ad Spy AI Agent", layout="wide")
 
 st.title("🕵️ Competitor Ad Spy AI Agent")
@@ -656,14 +664,6 @@ with tabs[4]:
     else:
         st.write("No log file found yet.")
     session.close()
-
-async def scrape_meta_ads_task(run_id, query_or_url):
-    scraper = MetaScraper(run_id, query_or_url)
-    await scraper.run()
-
-async def scrape_tiktok_ads_task(run_id, query_or_url):
-    scraper = TikTokScraper(run_id, query_or_url)
-    await scraper.run()
 
 if st.sidebar.button("Send Latest Digest to WhatsApp"):
     if not target_phone:
