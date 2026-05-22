@@ -8,10 +8,10 @@ logger = logging.getLogger("AdSpyAgent.Market")
 
 class MarketAgent:
     @staticmethod
-    def analyze_trends(brand_id: int):
-        session = get_session()
+    def analyze_trends(brand_id: int, session=None):
+        _session = session or get_session()
         try:
-            brand = session.get(Brand, brand_id)
+            brand = _session.get(Brand, brand_id)
             if not brand: return
 
             now = datetime.now(UTC).replace(tzinfo=None)
@@ -40,8 +40,10 @@ class MarketAgent:
                 logger.info(f"High Aggression detected for brand {brand.name}: {new_ads} new ads.")
                 # Could trigger AlertAgent here
 
-            session.commit()
+            if not session:
+                _session.commit()
         except Exception as e:
             logger.error(f"Market Analysis failed for brand {brand_id}: {e}")
         finally:
-            session.close()
+            if not session:
+                _session.close()

@@ -180,6 +180,10 @@ class ScrapeRun(Base):
     urgency_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     persona: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
+    # Validation & Critique
+    critique_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    hallucination_flags: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
     ads: Mapped[List["ExtractedAd"]] = relationship("ExtractedAd", back_populates="run", cascade="all, delete-orphan")
 
 class ScrapeSchedule(Base):
@@ -222,6 +226,7 @@ class ExtractedAd(Base):
     # Phase 3 Visual Intelligence
     creative_embedding: Mapped[Optional[bytes]] = mapped_column(nullable=True)
     quality_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    extraction_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     run: Mapped["ScrapeRun"] = relationship("ScrapeRun", back_populates="ads")
     brand: Mapped[Optional["Brand"]] = relationship("Brand", back_populates="ads")

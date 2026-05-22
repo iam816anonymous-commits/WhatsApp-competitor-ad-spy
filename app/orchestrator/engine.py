@@ -107,15 +107,26 @@ class IntelligenceOrchestrator:
         # 4. Market & Alerting
         logger.info("Executing Market Intelligence Agent...")
         from app.agents.market_agent import MarketAgent
-        MarketAgent.analyze_trends(brand.id)
+        MarketAgent.analyze_trends(brand.id, session=session)
 
         # 5. Prediction Engine
         logger.info("Executing Prediction Agent...")
         try:
             for ad in run.ads:
-                PredictionAgent.forecast_ad_performance(ad.id)
+                PredictionAgent.forecast_ad_performance(ad.id, session=session)
         except Exception as e:
             logger.error(f"Prediction Engine failed: {e}")
+
+        # 6. Post-Run Critique & Auto-Repair
+        logger.info("Executing Critique Layer...")
+        try:
+            from app.agents.critique_agent import CritiqueAgent
+            await CritiqueAgent.review(self.run_id, session=session)
+
+            from app.orchestrator.repair import RetryManager
+            await RetryManager.repair_low_confidence_run(self.run_id, session=session)
+        except Exception as e:
+            logger.error(f"Critique/Repair Layer failed: {e}")
 
         # Check for winners to alert
         from app.agents.alert_agent import AlertAgent
