@@ -2,6 +2,7 @@ import streamlit as st
 import asyncio
 from playwright.async_api import async_playwright
 from typing import Optional, Any, List, Dict
+from sqlalchemy.orm import Mapped
 import subprocess
 import sys
 import urllib.parse
@@ -18,8 +19,8 @@ from datetime import datetime, timedelta
 from threading import Thread
 from queue import Queue
 from abc import ABC, abstractmethod
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, ForeignKey, func
-from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, ForeignKey, func, desc
+from sqlalchemy.orm import DeclarativeBase, sessionmaker, relationship, mapped_column
 
 # Setup Logging
 logging.basicConfig(
@@ -33,40 +34,41 @@ logging.basicConfig(
 logger = logging.getLogger("AdSpyAgent")
 
 # Database Setup
-Base = declarative_base()
+class Base(DeclarativeBase):
+    pass
 
 class ScrapeRun(Base):
     __tablename__ = 'scrape_runs'
-    id: int = Column(Integer, primary_key=True)
-    query: str = Column(String)
-    timestamp: datetime = Column(DateTime, default=datetime.utcnow)
-    status: str = Column(String) # PENDING, RUNNING, COMPLETED, FAILED
-    analysis_text: str = Column(Text)
-    retry_count: int = Column(Integer, default=0)
-    next_retry_at: datetime = Column(DateTime)
-    ads = relationship("ExtractedAd", back_populates="run", cascade="all, delete-orphan")
+    id: Mapped[int] = mapped_column(primary_key=True)
+    query: Mapped[str] = mapped_column(String)
+    timestamp: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    status: Mapped[str] = mapped_column(String) # PENDING, RUNNING, COMPLETED, FAILED
+    analysis_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    retry_count: Mapped[int] = mapped_column(default=0)
+    next_retry_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    ads: Mapped[List["ExtractedAd"]] = relationship("ExtractedAd", back_populates="run", cascade="all, delete-orphan")
 
 class ScrapeSchedule(Base):
     __tablename__ = 'scrape_schedules'
-    id: int = Column(Integer, primary_key=True)
-    query: str = Column(String)
-    frequency_hours: int = Column(Integer)
-    next_run_at: datetime = Column(DateTime)
-    is_active: int = Column(Integer, default=1)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    query: Mapped[str] = mapped_column(String)
+    frequency_hours: Mapped[int] = mapped_column()
+    next_run_at: Mapped[datetime] = mapped_column()
+    is_active: Mapped[int] = mapped_column(default=1)
 
 class ExtractedAd(Base):
     __tablename__ = 'extracted_ads'
-    id: int = Column(Integer, primary_key=True)
-    run_id: int = Column(Integer, ForeignKey('scrape_runs.id'))
-    ad_text: str = Column(Text)
-    launch_date: str = Column(String)
-    media_links: str = Column(Text)
-    local_media_path: str = Column(String)
-    content_hash: str = Column(String, unique=True)
-    final_destination_url: str = Column(Text)
-    funnel_type: str = Column(String)
-    last_seen: datetime = Column(DateTime, default=datetime.utcnow)
-    run = relationship("ScrapeRun", back_populates="ads")
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey('scrape_runs.id'))
+    ad_text: Mapped[str] = mapped_column(Text)
+    launch_date: Mapped[str] = mapped_column(String)
+    media_links: Mapped[str] = mapped_column(Text)
+    local_media_path: Mapped[Optional[str]] = mapped_column(nullable=True)
+    content_hash: Mapped[str] = mapped_column(unique=True)
+    final_destination_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    funnel_type: Mapped[Optional[str]] = mapped_column(nullable=True)
+    last_seen: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    run: Mapped["ScrapeRun"] = relationship("ScrapeRun", back_populates="ads")
 
 engine = create_engine('sqlite:///ad_spy.db', connect_args={"check_same_thread": False})
 Base.metadata.create_all(engine)
@@ -285,7 +287,7 @@ class BaseScraper(ABC):
         self.context: Optional[BrowserContext] = None
 
     @abstractmethod
-    async def initialize_browser(self, playwright):
+    async def initialize_browser(self, playwright: Any):
         pass
 
     @abstractmethod
@@ -308,7 +310,8 @@ class BaseScraper(ABC):
                 await self.initialize_browser(p)
                 if not self.context:
                     raise Exception("Browser context not initialized")
-                page = await self.context.new_page()
+                ctx = self.context
+                page = await ctx.new_page()
                 # Anti-bot evasion
                 await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
@@ -490,7 +493,8 @@ st.write("Modular, resilient, and database-backed ad intelligence.")
 # Sidebar for Job History
 st.sidebar.header("Job History")
 session = Session()
-recent_runs = session.query(ScrapeRun).order_by(ScrapeRun.timestamp.desc()).limit(10).all()
+# Use sqlalchemy.desc() to avoid Pylance confusion with Mapped attributes
+recent_runs = session.query(ScrapeRun).order_by(desc(ScrapeRun.timestamp)).limit(10).all()
 for r in recent_runs:
     st.sidebar.write(f"[{r.status}] {r.query} ({r.timestamp.strftime('%H:%M:%S')})")
 session.close()
@@ -502,14 +506,14 @@ with tabs[0]:
     st.subheader("System Overview")
     session = Session()
     total_ads = session.query(ExtractedAd).count()
-    active_schedules = session.query(ScrapeSchedule).filter_by(is_active=1).count()
+    active_schedules = session.query(ScrapeSchedule).filter(ScrapeSchedule.is_active == 1).count()
     total_runs = session.query(ScrapeRun).count()
 
     # Calculate most active competitor
     from sqlalchemy import func
-    most_active = session.query(ScrapeRun.query, func.count(ExtractedAd.id).label('ad_count'))\
-        .join(ExtractedAd).group_by(ScrapeRun.query).order_by(func.count(ExtractedAd.id).desc()).first()
-    most_active_str = most_active[0] if most_active else "N/A"
+    most_active = session.query(ScrapeRun.query, func.count(ExtractedAd.id))\
+        .join(ExtractedAd).group_by(ScrapeRun.query).order_by(desc(func.count(ExtractedAd.id))).first()
+    most_active_str = str(most_active[0]) if most_active else "N/A"
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total Ads Tracked", total_ads)
@@ -518,7 +522,7 @@ with tabs[0]:
     col4.metric("Most Active", most_active_str)
 
     st.markdown("### Recent AI Analytics")
-    latest_analyses = session.query(ScrapeRun).filter(ScrapeRun.analysis_text != None).order_by(ScrapeRun.timestamp.desc()).limit(3).all()
+    latest_analyses = session.query(ScrapeRun).filter(ScrapeRun.analysis_text.is_not(None)).order_by(desc(ScrapeRun.timestamp)).limit(3).all()
     for run in latest_analyses:
         with st.expander(f"Analysis for {run.query} ({run.timestamp.strftime('%Y-%m-%d')})"):
             st.write(run.analysis_text)
@@ -605,15 +609,15 @@ with tabs[3]:
 
     query = session.query(ExtractedAd).join(ScrapeRun)
     if filter_q:
-        query = query.filter(ScrapeRun.query.in_(filter_q))
+        query = query.filter(getattr(ScrapeRun, 'query').in_(filter_q))
     if filter_text:
-        query = query.filter(ExtractedAd.ad_text.like(f"%{filter_text}%"))
+        query = query.filter(getattr(ExtractedAd, 'ad_text').like(f"%{filter_text}%"))
     if len(date_range) == 2:
         start_date = datetime.combine(date_range[0], datetime.min.time())
         end_date = datetime.combine(date_range[1], datetime.max.time())
-        query = query.filter(ScrapeRun.timestamp.between(start_date, end_date))
+        query = query.filter(getattr(ScrapeRun, 'timestamp').between(start_date, end_date))
 
-    historical_ads = query.order_by(ExtractedAd.id.desc()).limit(100).all()
+    historical_ads = query.order_by(desc(ExtractedAd.id)).limit(100).all()
     if historical_ads:
         df_data = []
         for ad in historical_ads:
@@ -670,10 +674,10 @@ with tabs[4]:
     st.markdown("#### Error Rate by Competitor")
     session = Session()
     error_stats = session.query(
-        ScrapeRun.query,
+        getattr(ScrapeRun, 'query'),
         ScrapeRun.status,
         func.count(ScrapeRun.id)
-    ).group_by(ScrapeRun.query, ScrapeRun.status).all()
+    ).group_by(getattr(ScrapeRun, 'query'), ScrapeRun.status).all()
 
     if error_stats:
         err_df = pd.DataFrame(error_stats, columns=["Competitor", "Status", "Count"])
