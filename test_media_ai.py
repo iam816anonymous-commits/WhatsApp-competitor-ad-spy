@@ -27,7 +27,7 @@ def test_media_download(mock_get):
 
 @patch('app.requests.post')
 def test_multimodal_ai(mock_post):
-    AIConfig.GEMINI_API_KEY = "dummy"
+    AIConfig.GEMINI_API_KEY = str("dummy")
     mock_response = MagicMock()
     mock_response.json.return_value = {
         'candidates': [{'content': {'parts': [{'text': 'Multimodal Analysis Success'}]}}]

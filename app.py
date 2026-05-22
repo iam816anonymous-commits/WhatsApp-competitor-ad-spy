@@ -217,7 +217,7 @@ task_queue = get_task_queue()
 
 # AI Analysis Configuration
 class AIConfig:
-    GEMINI_API_KEY = "YOUR_GEMINI_API_KEY" # Placeholder
+    GEMINI_API_KEY: str = "YOUR_GEMINI_API_KEY" # Placeholder
 
 def analyze_ads_with_ai(ads_data_list):
     if not AIConfig.GEMINI_API_KEY or AIConfig.GEMINI_API_KEY == "YOUR_GEMINI_API_KEY":
@@ -307,56 +307,64 @@ class BaseScraper(ABC):
         from playwright.async_api import async_playwright
         try:
             async with async_playwright() as p:
-                await self.initialize_browser(p)
-                if not self.context:
-                    raise Exception("Browser context not initialized")
-                ctx = self.context
-                page = await ctx.new_page()
-                # Anti-bot evasion
-                await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+                try:
+                    await self.initialize_browser(p)
+                    if not self.context:
+                        raise Exception("Browser context not initialized")
+                    ctx = self.context
+                    page = await ctx.new_page()
+                    # Anti-bot evasion
+                    await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
-                await self.execute_scrape(page)
+                    await self.execute_scrape(page)
 
-                # Perform AI Analysis before completing
-                run_ads_data = [
-                    {
-                        "text": ad.ad_text,
-                        "local_path": ad.local_media_path,
-                        "destination_url": ad.final_destination_url
-                    } for ad in run.ads
-                ]
-                if run_ads_data:
-                    logger.info(f"Starting Multimodal AI analysis for run {self.run_id}")
-                    analysis_result = analyze_ads_with_ai(run_ads_data)
-                    run.analysis_text = analysis_result
+                    # Perform AI Analysis before completing
+                    run_ads_data = [
+                        {
+                            "text": ad.ad_text,
+                            "local_path": ad.local_media_path,
+                            "destination_url": ad.final_destination_url
+                        } for ad in run.ads
+                    ]
+                    if run_ads_data:
+                        logger.info(f"Starting Multimodal AI analysis for run {self.run_id}")
+                        analysis_result = analyze_ads_with_ai(run_ads_data)
+                        run.analysis_text = analysis_result
 
-                    # Store individual funnel types back to ads
+                        # Store individual funnel types back to ads
+                        try:
+                            for ad_db in run.ads:
+                                if "Direct-to-Consumer" in str(analysis_result):
+                                    ad_db.funnel_type = "Direct-to-Consumer"
+                                elif "Lead Magnet" in str(analysis_result):
+                                    ad_db.funnel_type = "Lead Magnet"
+                                elif "VSL" in str(analysis_result) or "Webinar" in str(analysis_result):
+                                    ad_db.funnel_type = "VSL/Webinar"
+                        except:
+                            pass
+
+                        session.commit()
+
+                    run.status = "COMPLETED"
+                    session.commit()
+                finally:
+                    # Inner finally for browser objects within the playwright session
                     try:
-                        # Simple extraction: look for "Funnel: [Type]" or "Funnel Mapping: [Type]"
-                        for ad_db in run.ads:
-                            if "Direct-to-Consumer" in str(analysis_result):
-                                ad_db.funnel_type = "Direct-to-Consumer"
-                            elif "Lead Magnet" in str(analysis_result):
-                                ad_db.funnel_type = "Lead Magnet"
-                            elif "VSL" in str(analysis_result) or "Webinar" in str(analysis_result):
-                                ad_db.funnel_type = "VSL/Webinar"
+                        if self.context:
+                            await self.context.close()
                     except:
                         pass
-
-                    session.commit()
-
-                run.status = "COMPLETED"
-                session.commit()
+                    try:
+                        if self.browser:
+                            await self.browser.close()
+                    except:
+                        pass
         except Exception as e:
             logger.error(f"Scrape failed for run {self.run_id}: {e}")
             run.status = "FAILED"
             run.next_retry_at = datetime.utcnow() + timedelta(minutes=15)
             session.commit()
         finally:
-            if self.context:
-                await self.context.close()
-            if self.browser:
-                await self.browser.close()
             session.close()
 
 class MetaScraper(BaseScraper):
@@ -369,7 +377,8 @@ class MetaScraper(BaseScraper):
             )
         else:
             self.browser = await playwright.chromium.launch(headless=True)
-            self.context = await self.browser.new_context()
+            if self.browser:
+                self.context = await self.browser.new_context()
 
     async def execute_scrape(self, page):
         if self.query_or_url.startswith("http"):
@@ -455,7 +464,8 @@ class MetaScraper(BaseScraper):
 class TikTokScraper(BaseScraper):
     async def initialize_browser(self, playwright):
         self.browser = await playwright.chromium.launch(headless=True)
-        self.context = await self.browser.new_context()
+        if self.browser:
+            self.context = await self.browser.new_context()
 
     async def execute_scrape(self, page):
         # Stub for TikTok Commercial Content Library
