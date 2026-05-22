@@ -23,7 +23,7 @@ def render_ui(task_queue):
         st.sidebar.write(f"[{r.status}] {r.query} ({r.timestamp.strftime('%H:%M:%S')})")
     session.close()
 
-    tabs = st.tabs(["📊 Command Center", "🕵️ Manual Scrape", "📅 Schedule Manager", "📁 Historical Data", "🩺 System Health"])
+    tabs = st.tabs(["📊 Command Center", "🎯 Competitor Intelligence", "🕵️ Manual Scrape", "📅 Schedule Manager", "📁 Historical Data", "👁️ Human Audit", "🩺 System Health"])
 
     with tabs[0]:
         st.subheader("System Overview")
@@ -39,6 +39,30 @@ def render_ui(task_queue):
         session.close()
 
     with tabs[1]:
+        st.subheader("🎯 Competitor Market Intelligence")
+        session = get_session()
+        from app.models.models import CompetitorProfile
+        profiles = session.query(CompetitorProfile).all()
+        if profiles:
+            df_p = pd.DataFrame([{
+                "Brand": p.brand_name,
+                "Creative Count": p.creative_count,
+                "Offer Shifts": p.offer_shift_count,
+                "Market Velocity": p.market_velocity,
+                "Last Seen": p.last_seen.strftime('%Y-%m-%d %H:%M')
+            } for p in profiles])
+            st.table(df_p)
+
+            # Export Pulse Report
+            from app.utils.export import ExportEngine
+            if st.button("Generate Market Pulse Report (XLSX)"):
+                xlsx_data = ExportEngine.generate_market_pulse_xlsx()
+                st.download_button("Download Report", xlsx_data, file_name="market_pulse_report.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        else:
+            st.info("No competitor profiles tracked yet.")
+        session.close()
+
+    with tabs[2]:
         brand_or_url = st.text_input("Brand or URL")
         if st.button("Start Scrape"):
             session = get_session()
@@ -50,7 +74,7 @@ def render_ui(task_queue):
             task_queue.put((scrape_meta_ads_task, (run_id, str(brand_or_url))))
             st.info("Queued.")
 
-    with tabs[2]:
+    with tabs[3]:
         with st.form("new_schedule"):
             q = st.text_input("Brand")
             f = st.number_input("Freq (H)", value=24)
@@ -61,18 +85,71 @@ def render_ui(task_queue):
                 session.commit()
                 session.close()
 
-    with tabs[3]:
+    with tabs[4]:
         st.subheader("Historical Data")
         session = get_session()
         ads = session.query(ExtractedAd).order_by(desc(ExtractedAd.id)).limit(100).all()
         if ads:
             df = pd.DataFrame([{
-                "ID": a.id, "Brand": a.run.query, "Text": a.ad_text[:50], "Funnel": a.funnel_type
+                "ID": a.id,
+                "Brand": a.run.query,
+                "Text": a.ad_text[:50],
+                "Funnel": a.funnel_type,
+                "Confidence": a.extraction_confidence,
+                "Review Req": "⚠️" if a.needs_review else "✅"
             } for a in ads])
             st.dataframe(df)
         session.close()
 
-    with tabs[4]:
+    with tabs[5]:
+        st.subheader("👁️ Human-in-the-Loop Audit")
+        session = get_session()
+        review_ads = session.query(ExtractedAd).filter(ExtractedAd.needs_review == True).all()
+
+        if not review_ads:
+            st.success("No ads require manual review.")
+        else:
+            st.warning(f"{len(review_ads)} ads require verification.")
+            for ad in review_ads:
+                with st.expander(f"Review Ad {ad.id} (Run: {ad.run.query})"):
+                    col1, col2 = st.columns([2, 1])
+                    with col1:
+                        st.write("**Extracted Text:**")
+                        st.write(ad.ad_text)
+                        st.write(f"**Confidence:** {ad.extraction_confidence}")
+                        st.write(f"**Repair Attempts:** {ad.repair_attempts}")
+                    with col2:
+                        if ad.local_media_path:
+                            st.image(ad.local_media_path)
+
+                    # Traceability: Raw Evidence
+                    from app.models.models import RawEvidence
+                    evidence = session.query(RawEvidence).filter_by(run_id=ad.run_id).all()
+                    if evidence:
+                        st.write("**Traceability (Raw Evidence):**")
+                        for ev in evidence:
+                            if ev.file_path and os.path.exists(ev.file_path):
+                                if ev.evidence_type == "screenshot":
+                                    with open(ev.file_path, "rb") as f:
+                                        st.download_button(f"Download {ev.evidence_type}", f.read(), file_name=f"run_{ad.run_id}_{ev.evidence_type}.png", key=f"dl_{ev.id}")
+                                else:
+                                    with open(ev.file_path, "r") as f:
+                                        st.download_button(f"Download {ev.evidence_type}", f.read(), file_name=f"run_{ad.run_id}_{ev.evidence_type}.html", key=f"dl_{ev.id}")
+                            elif ev.content:
+                                st.download_button(f"Download {ev.evidence_type}", ev.content, file_name=f"run_{ad.run_id}_{ev.evidence_type}.json", key=f"dl_{ev.id}")
+
+                    c1, c2 = st.columns(2)
+                    if c1.button("Approve", key=f"app_{ad.id}"):
+                        ad.needs_review = False
+                        session.commit()
+                        st.rerun()
+                    if c2.button("Discard", key=f"disc_{ad.id}"):
+                        session.delete(ad)
+                        session.commit()
+                        st.rerun()
+        session.close()
+
+    with tabs[6]:
         st.subheader("Enterprise System Health")
         from app.utils.metrics import MetricsEngine
         stats = MetricsEngine.get_stats()
@@ -82,6 +159,16 @@ def render_ui(task_queue):
         col2.metric("Failure Rate", f"{stats['failure_rate_pct']:.2f}%")
         col3.metric("Tasks Completed", stats['total_tasks'])
         col4.metric("Pred. Drift", f"{stats['prediction_drift']*100}%")
+
+        st.divider()
+        st.subheader("🧠 Self-Review Audit (Technical Debt)")
+        from app.agents.self_review_agent import SelfReviewAgent
+        issues = SelfReviewAgent.audit_code_efficiency()
+        if issues:
+            for issue in issues:
+                st.error(f"**[{issue['module']}]** {issue['issue']} -> {issue['fix']}")
+        else:
+            st.success("No technical debt issues detected.")
 
         st.divider()
         worker_alive = any("background_worker" in str(t) or t.name == "Thread-1" for t in threading.enumerate())

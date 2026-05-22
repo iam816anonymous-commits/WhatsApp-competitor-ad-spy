@@ -58,6 +58,18 @@ class AuditLog(Base):
     details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     timestamp: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
+class CompetitorProfile(Base):
+    __tablename__ = 'competitor_profiles'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    brand_name: Mapped[str] = mapped_column(String, unique=True)
+    first_seen: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+    last_seen: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+    offer_shift_count: Mapped[int] = mapped_column(default=0)
+    creative_count: Mapped[int] = mapped_column(default=0)
+    winning_assets: Mapped[Optional[str]] = mapped_column(Text, nullable=True) # JSON or list
+    dominant_hook: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    market_velocity: Mapped[float] = mapped_column(default=0.0)
+
 class Brand(Base):
     __tablename__ = 'brands'
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -142,6 +154,11 @@ class LandingPage(Base):
     pixels_detected: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     funnel_stage: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
+    # Phase 5 additions
+    pricing: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    email_capture_detected: Mapped[bool] = mapped_column(default=False)
+    has_checkout: Mapped[bool] = mapped_column(default=False)
+
     ads: Mapped[List["ExtractedAd"]] = relationship("ExtractedAd", back_populates="landing_page")
 
 class CreativeCluster(Base):
@@ -162,6 +179,29 @@ class TrendSnapshot(Base):
     dominant_emotion: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     brand: Mapped["Brand"] = relationship("Brand", back_populates="snapshots")
+
+class CritiqueEvent(Base):
+    __tablename__ = 'critique_events'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey('scrape_runs.id'))
+    ad_id: Mapped[Optional[int]] = mapped_column(ForeignKey('extracted_ads.id'), nullable=True)
+    issue_type: Mapped[str] = mapped_column(String) # e.g. "hallucination", "low_confidence"
+    description: Mapped[str] = mapped_column(Text)
+    severity: Mapped[float] = mapped_column(default=0.5)
+    timestamp: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+class RawEvidence(Base):
+    __tablename__ = 'raw_evidence'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey('scrape_runs.id'))
+    ad_id: Mapped[Optional[int]] = mapped_column(ForeignKey('extracted_ads.id'), nullable=True)
+    evidence_type: Mapped[str] = mapped_column(String) # "html", "screenshot", "raw_ai_json"
+    file_path: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    captured_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+    metadata_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+    run: Mapped["ScrapeRun"] = relationship("ScrapeRun", back_populates="evidence")
 
 class ScrapeRun(Base):
     __tablename__ = 'scrape_runs'
@@ -185,6 +225,7 @@ class ScrapeRun(Base):
     hallucination_flags: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     ads: Mapped[List["ExtractedAd"]] = relationship("ExtractedAd", back_populates="run", cascade="all, delete-orphan")
+    evidence: Mapped[List["RawEvidence"]] = relationship("RawEvidence", back_populates="run", cascade="all, delete-orphan")
 
 class ScrapeSchedule(Base):
     __tablename__ = 'scrape_schedules'
@@ -223,10 +264,15 @@ class ExtractedAd(Base):
     winner_probability: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     fatigue_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
-    # Phase 3 Visual Intelligence
+    # Phase 3/5 Visual Intelligence
     creative_embedding: Mapped[Optional[bytes]] = mapped_column(nullable=True)
     quality_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     extraction_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    needs_review: Mapped[bool] = mapped_column(default=False)
+    repair_attempts: Mapped[int] = mapped_column(default=0)
+    phash: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    dominant_colors: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    ocr_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     run: Mapped["ScrapeRun"] = relationship("ScrapeRun", back_populates="ads")
     brand: Mapped[Optional["Brand"]] = relationship("Brand", back_populates="ads")

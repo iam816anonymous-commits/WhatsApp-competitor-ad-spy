@@ -2,13 +2,15 @@ import logging
 import json
 import re
 from typing import List, Dict, Any
+from datetime import datetime, UTC
 from app.agents.ai_agent import analyze_ads_with_ai
 from app.agents.vision_agent import generate_image_embedding
 from app.agents.prediction_agent import PredictionAgent
 from app.db.database import get_session
 from app.db.tenant_context import get_tenant
-from app.models.models import ScrapeRun, ExtractedAd, Brand, Campaign, Offer, LandingPage, MarketEvent, Persona, Hook
+from app.models.models import ScrapeRun, ExtractedAd, Brand, Campaign, Offer, LandingPage, MarketEvent, Persona, Hook, CompetitorProfile
 from app.utils.media import resolve_redirects
+from app.utils.fingerprint import get_creative_fingerprint
 
 logger = logging.getLogger("AdSpyAgent.Orchestrator")
 
@@ -77,14 +79,24 @@ class IntelligenceOrchestrator:
                     session.add(lp)
                     session.flush()
 
-                    # Async Crawl
-                    from app.scrapers.landing_page import LandingPageCrawler
-                    crawl_data = await LandingPageCrawler.crawl(ad.final_destination_url)
+                    # Async Crawl (Phase 5 - use new scraper)
+                    from app.scrapers.landing_page_scraper import LandingPageScraper
+                    crawl_data = await LandingPageScraper.analyze_url(ad.final_destination_url)
                     lp.headline = crawl_data.get("headline")
                     lp.cta_text = crawl_data.get("cta_text")
-                    lp.pixels_detected = crawl_data.get("pixels")
+                    lp.pixels_detected = crawl_data.get("pixels_detected")
+                    lp.pricing = crawl_data.get("pricing")
+                    lp.email_capture_detected = crawl_data.get("email_capture_detected")
+                    lp.has_checkout = crawl_data.get("has_checkout")
 
                 ad.landing_page_id = lp.id
+
+            # Phase 5: Fingerprinting
+            if ad.local_media_path and not ad.phash:
+                fp = get_creative_fingerprint(ad.local_media_path)
+                if fp:
+                    ad.phash = fp["phash"]
+                    ad.dominant_colors = fp["dominant_colors"]
 
             ad.quality_score = self._calculate_quality_score(ad)
 
@@ -108,6 +120,21 @@ class IntelligenceOrchestrator:
         logger.info("Executing Market Intelligence Agent...")
         from app.agents.market_agent import MarketAgent
         MarketAgent.analyze_trends(brand.id, session=session)
+
+        # Phase 5: Competitor Profile Update
+        profile = session.query(CompetitorProfile).filter_by(brand_name=run.query).first()
+        if not profile:
+            profile = CompetitorProfile(
+                brand_name=run.query,
+                creative_count=0,
+                offer_shift_count=0,
+                market_velocity=0.0
+            )
+            session.add(profile)
+
+        profile.last_seen = datetime.now(UTC)
+        profile.creative_count = (profile.creative_count or 0) + len(run.ads)
+        if run.offer_type: profile.offer_shift_count += 1
 
         # 5. Prediction Engine
         logger.info("Executing Prediction Agent...")

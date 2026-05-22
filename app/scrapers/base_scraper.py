@@ -111,6 +111,13 @@ class MetaScraper(BaseScraper):
             await asyncio.sleep(random.uniform(0.5, 1.5))
 
         ad_cards = page.locator('div').filter(has_text="Started running on")
+
+        # Increase resilience by waiting for at least one card
+        try:
+            await ad_cards.first.wait_for(timeout=15000)
+        except:
+            logger.warning("No ad cards appeared within 15s")
+
         count = await ad_cards.count()
         session = get_session()
         run = session.get(ScrapeRun, self.run_id)
@@ -121,7 +128,8 @@ class MetaScraper(BaseScraper):
         for i in range(count):
             card = ad_cards.nth(i)
             try:
-                card_text = await card.inner_text()
+                # Localized timeout for card internal elements
+                card_text = await card.inner_text(timeout=5000)
                 date_match = re.search(r"Started running on (.*)", card_text)
                 launch_date_str = date_match.group(1).split('\n')[0] if date_match else "Unknown"
 
@@ -129,10 +137,18 @@ class MetaScraper(BaseScraper):
                 ad_text = max(lines, key=len) if lines else "No text found"
 
                 images = await card.locator('img').all()
-                image_links = [await img.get_attribute('src') for img in images if await img.get_attribute('src')]
+                image_links = []
+                for img in images[:3]: # Limit to first 3 images for speed
+                    src = await img.get_attribute('src', timeout=2000)
+                    if src: image_links.append(src)
+
                 media_links_str = ", ".join(image_links)
 
-                cta_link = await card.locator('a[role="button"]').first.get_attribute('href')
+                cta_btn = card.locator('a[role="button"]').first
+                cta_link = None
+                if await cta_btn.count() > 0:
+                    cta_link = await cta_btn.get_attribute('href', timeout=2000)
+
                 final_url = await resolve_redirects(cta_link) if cta_link else None
 
                 content_to_hash = f"{launch_date_str}|{ad_text}|{media_links_str}"
