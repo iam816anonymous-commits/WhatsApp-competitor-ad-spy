@@ -12,6 +12,7 @@ from playwright.async_api import async_playwright, Browser, BrowserContext
 from app.db.database import get_session
 from app.models.models import ScrapeRun, ExtractedAd
 from app.utils.media import download_media, resolve_redirects
+from app.agents.vision_agent import generate_image_embedding
 # Orchestrator will handle AI and Embeddings now
 
 logger = logging.getLogger("AdSpyAgent.Scraper")
@@ -141,11 +142,6 @@ class MetaScraper(BaseScraper):
                 if not existing:
                     local_path = await download_media(media_links_str)
 
-                    embedding = None
-                    if local_path:
-                        # Synchronous embedding generation for now as most ML libs are sync
-                        embedding = generate_image_embedding(local_path)
-
                     new_ad = ExtractedAd(
                         run_id=run.id,
                         ad_text=ad_text,
@@ -154,8 +150,7 @@ class MetaScraper(BaseScraper):
                         local_media_path=local_path,
                         content_hash=content_hash,
                         final_destination_url=final_url,
-                        last_seen=datetime.now(UTC),
-                        creative_embedding=embedding
+                        last_seen=datetime.now(UTC)
                     )
                     session.add(new_ad)
                 else:

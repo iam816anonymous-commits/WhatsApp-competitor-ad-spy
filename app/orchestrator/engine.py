@@ -4,8 +4,9 @@ import re
 from typing import List, Dict, Any
 from app.agents.ai_agent import analyze_ads_with_ai
 from app.agents.vision_agent import generate_image_embedding
+from app.agents.prediction_agent import PredictionAgent
 from app.db.database import get_session
-from app.models.models import ScrapeRun, ExtractedAd, Brand, Campaign, Offer, LandingPage
+from app.models.models import ScrapeRun, ExtractedAd, Brand, Campaign, Offer, LandingPage, MarketEvent, Persona, Hook
 from app.utils.media import resolve_redirects
 
 logger = logging.getLogger("AdSpyAgent.Orchestrator")
@@ -95,6 +96,11 @@ class IntelligenceOrchestrator:
         from app.agents.market_agent import MarketAgent
         MarketAgent.analyze_trends(brand.id)
 
+        # 5. Prediction Engine
+        logger.info("Executing Prediction Agent...")
+        for ad in run.ads:
+            PredictionAgent.forecast_ad_performance(ad.id)
+
         # Check for winners to alert
         from app.agents.alert_agent import AlertAgent
         # Logic: If any ad in this run has longevity > 21 days
@@ -120,16 +126,52 @@ class IntelligenceOrchestrator:
             run.urgency_score = data.get("urgency_score")
             run.persona = data.get("persona")
 
-            # Map Offer if identified
-            offer_name = data.get("offer_type")
-            if offer_name:
-                offer = session.query(Offer).filter_by(brand_id=run.ads[0].brand_id, name=offer_name).first()
-                if not offer:
-                    offer = Offer(brand_id=run.ads[0].brand_id, name=offer_name, type=offer_name)
-                    session.add(offer)
+            brand_id = run.ads[0].brand_id if run.ads else None
+
+            # 1. Map Offer & Detect Shifts
+            offer_type = data.get("offer_type")
+            if offer_type and brand_id:
+                existing_active_offer = session.query(Offer).filter_by(brand_id=brand_id, is_active=1).first()
+
+                if not existing_active_offer or existing_active_offer.type != offer_type:
+                    # Log Market Event: Offer Shift
+                    event = MarketEvent(
+                        brand_id=brand_id,
+                        event_type="Offer Shift",
+                        description=f"Brand shifted offer strategy to {offer_type}",
+                        old_value=existing_active_offer.type if existing_active_offer else "None",
+                        new_value=offer_type
+                    )
+                    session.add(event)
+
+                    if existing_active_offer: existing_active_offer.is_active = 0
+
+                    new_offer = Offer(brand_id=brand_id, name=offer_type, type=offer_type, is_active=1)
+                    session.add(new_offer)
                     session.flush()
-                for ad in run.ads:
-                    ad.offer_id = offer.id
+                    for ad in run.ads: ad.offer_id = new_offer.id
+                else:
+                    for ad in run.ads: ad.offer_id = existing_active_offer.id
+
+            # 2. Map Persona
+            persona_name = data.get("persona")
+            if persona_name and brand_id:
+                persona = session.query(Persona).filter_by(brand_id=brand_id, name=persona_name).first()
+                if not persona:
+                    persona = Persona(brand_id=brand_id, name=persona_name)
+                    session.add(persona)
+                    session.flush()
+                for ad in run.ads: ad.persona_id = persona.id
+
+            # 3. Map Hook
+            hook_text = data.get("headline") or "Generic Hook"
+            if hook_text and brand_id:
+                hook = session.query(Hook).filter_by(brand_id=brand_id, text=hook_text).first()
+                if not hook:
+                    hook = Hook(brand_id=brand_id, text=hook_text, type=data.get("hook_type"))
+                    session.add(hook)
+                    session.flush()
+                for ad in run.ads: ad.hook_id = hook.id
 
             # Update Ads
             for ad in run.ads:

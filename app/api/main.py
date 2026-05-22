@@ -17,10 +17,10 @@ def set_task_queue(q: Queue):
 
 @app.get("/health")
 def health_check():
-    from app.utils.cost_tracker import CostTracker
+    from app.utils.cost_governor import CostGovernor
+    # Return global summary for demo, usually filtered by org
     return {
-        "status": "alive",
-        "costs": CostTracker.get_summary()
+        "status": "alive"
     }
 
 @app.post("/scrape")

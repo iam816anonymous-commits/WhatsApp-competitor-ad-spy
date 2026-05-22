@@ -1,10 +1,53 @@
 from datetime import datetime, UTC
 from typing import List, Optional
-from sqlalchemy import Integer, String, DateTime, Text, ForeignKey, JSON, Float
+from sqlalchemy import Integer, String, DateTime, Text, ForeignKey, JSON, Float, MetaData
 from sqlalchemy.orm import DeclarativeBase, relationship, Mapped, mapped_column
 
+# Naming convention for SQLite migrations
+naming_convention = {
+    "ix": "ix_%(column_0_label)s",
+    "uq": "uq_%(table_name)s_%(column_0_name)s",
+    "ck": "ck_%(table_name)s_%(constraint_name)s",
+    "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
+    "pk": "pk_%(table_name)s"
+}
+
 class Base(DeclarativeBase):
-    pass
+    metadata = MetaData(naming_convention=naming_convention)
+
+class Organization(Base):
+    __tablename__ = 'organizations'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String, unique=True)
+    monthly_budget: Mapped[float] = mapped_column(Float, default=100.0)
+
+    users: Mapped[List["User"]] = relationship("User", back_populates="org")
+    projects: Mapped[List["Project"]] = relationship("Project", back_populates="org")
+
+class User(Base):
+    __tablename__ = 'users'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey('organizations.id'))
+    email: Mapped[str] = mapped_column(String, unique=True)
+    role: Mapped[str] = mapped_column(String, default="analyst")
+
+    org: Mapped["Organization"] = relationship("Organization", back_populates="users")
+
+class Project(Base):
+    __tablename__ = 'projects'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey('organizations.id'))
+    name: Mapped[str] = mapped_column(String)
+
+    org: Mapped["Organization"] = relationship("Organization", back_populates="projects")
+    schedules: Mapped[List["ScrapeSchedule"]] = relationship("ScrapeSchedule", back_populates="project")
+
+class OrganizationUsage(Base):
+    __tablename__ = 'organization_usage'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey('organizations.id'))
+    month: Mapped[str] = mapped_column(String) # e.g. "2023-10"
+    total_spend: Mapped[float] = mapped_column(Float, default=0.0)
 
 class Brand(Base):
     __tablename__ = 'brands'
@@ -18,6 +61,42 @@ class Brand(Base):
     campaigns: Mapped[List["Campaign"]] = relationship("Campaign", back_populates="brand")
     offers: Mapped[List["Offer"]] = relationship("Offer", back_populates="brand")
     snapshots: Mapped[List["TrendSnapshot"]] = relationship("TrendSnapshot", back_populates="brand")
+    personas: Mapped[List["Persona"]] = relationship("Persona", back_populates="brand")
+    hooks: Mapped[List["Hook"]] = relationship("Hook", back_populates="brand")
+    events: Mapped[List["MarketEvent"]] = relationship("MarketEvent", back_populates="brand")
+
+class Persona(Base):
+    __tablename__ = 'personas'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    brand_id: Mapped[int] = mapped_column(ForeignKey('brands.id'))
+    name: Mapped[str] = mapped_column(String) # e.g. "Fitness Enthusiast"
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    brand: Mapped["Brand"] = relationship("Brand", back_populates="personas")
+    ads: Mapped[List["ExtractedAd"]] = relationship("ExtractedAd", back_populates="persona_rel")
+
+class Hook(Base):
+    __tablename__ = 'hooks'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    brand_id: Mapped[int] = mapped_column(ForeignKey('brands.id'))
+    text: Mapped[str] = mapped_column(Text)
+    type: Mapped[Optional[str]] = mapped_column(String, nullable=True) # e.g. "Question", "Stat"
+    survival_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    brand: Mapped["Brand"] = relationship("Brand", back_populates="hooks")
+    ads: Mapped[List["ExtractedAd"]] = relationship("ExtractedAd", back_populates="hook_rel")
+
+class MarketEvent(Base):
+    __tablename__ = 'market_events'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    brand_id: Mapped[int] = mapped_column(ForeignKey('brands.id'))
+    event_type: Mapped[str] = mapped_column(String) # e.g. "Offer Shift", "Price Change"
+    description: Mapped[str] = mapped_column(Text)
+    old_value: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    new_value: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+    brand: Mapped["Brand"] = relationship("Brand", back_populates="events")
 
 class Campaign(Base):
     __tablename__ = 'campaigns'
@@ -96,10 +175,13 @@ class ScrapeRun(Base):
 class ScrapeSchedule(Base):
     __tablename__ = 'scrape_schedules'
     id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[Optional[int]] = mapped_column(ForeignKey('projects.id'), nullable=True)
     query: Mapped[str] = mapped_column(String)
     frequency_hours: Mapped[int] = mapped_column()
     next_run_at: Mapped[datetime] = mapped_column()
     is_active: Mapped[int] = mapped_column(default=1)
+
+    project: Mapped[Optional["Project"]] = relationship("Project", back_populates="schedules")
 
 class ExtractedAd(Base):
     __tablename__ = 'extracted_ads'
@@ -110,6 +192,8 @@ class ExtractedAd(Base):
     offer_id: Mapped[Optional[int]] = mapped_column(ForeignKey('offers.id'), nullable=True)
     landing_page_id: Mapped[Optional[int]] = mapped_column(ForeignKey('landing_pages.id'), nullable=True)
     cluster_id: Mapped[Optional[int]] = mapped_column(ForeignKey('creative_clusters.id'), nullable=True)
+    persona_id: Mapped[Optional[int]] = mapped_column(ForeignKey('personas.id'), nullable=True)
+    hook_id: Mapped[Optional[int]] = mapped_column(ForeignKey('hooks.id'), nullable=True)
 
     ad_text: Mapped[str] = mapped_column(Text)
     headline: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -121,6 +205,10 @@ class ExtractedAd(Base):
     funnel_type: Mapped[Optional[str]] = mapped_column(nullable=True)
     last_seen: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
+    # Predictive Metrics
+    winner_probability: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    fatigue_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
     # Phase 3 Visual Intelligence
     creative_embedding: Mapped[Optional[bytes]] = mapped_column(nullable=True)
 
@@ -130,3 +218,5 @@ class ExtractedAd(Base):
     offer: Mapped[Optional["Offer"]] = relationship("Offer", back_populates="ads")
     landing_page: Mapped[Optional["LandingPage"]] = relationship("LandingPage", back_populates="ads")
     cluster: Mapped[Optional["CreativeCluster"]] = relationship("CreativeCluster", back_populates="ads")
+    persona_rel: Mapped[Optional["Persona"]] = relationship("Persona", back_populates="ads")
+    hook_rel: Mapped[Optional["Hook"]] = relationship("Hook", back_populates="ads")
