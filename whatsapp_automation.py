@@ -61,7 +61,7 @@ async def send_whatsapp_message(phone, user_data_dir=None):
         # Notification Fatigue Filter: Only send if there's a winner or a fresh analysis
         if not winners and "Winning" not in str(analysis):
              logger.info("No high-signal 'Winning' assets found. Skipping notification to avoid fatigue.")
-             # return # Uncomment in production to enable filtering
+             return # Alert specifically for Winning Core Assets
 
         digest = f"*🏆 WINNING AD ALERT: {query}*\n" if winners else f"*🕵️ Ad Intelligence Digest: {query}*\n"
         digest += f"📅 _Generated: {timestamp}_\n\n"

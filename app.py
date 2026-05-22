@@ -1,6 +1,7 @@
 import streamlit as st
 import asyncio
 from playwright.async_api import async_playwright
+from typing import Optional, Any, List, Dict
 import subprocess
 import sys
 import urllib.parse
@@ -36,35 +37,35 @@ Base = declarative_base()
 
 class ScrapeRun(Base):
     __tablename__ = 'scrape_runs'
-    id = Column(Integer, primary_key=True)
-    query = Column(String)
-    timestamp = Column(DateTime, default=datetime.utcnow)
-    status = Column(String) # PENDING, RUNNING, COMPLETED, FAILED
-    analysis_text = Column(Text)
-    retry_count = Column(Integer, default=0)
-    next_retry_at = Column(DateTime)
+    id: int = Column(Integer, primary_key=True)
+    query: str = Column(String)
+    timestamp: datetime = Column(DateTime, default=datetime.utcnow)
+    status: str = Column(String) # PENDING, RUNNING, COMPLETED, FAILED
+    analysis_text: str = Column(Text)
+    retry_count: int = Column(Integer, default=0)
+    next_retry_at: datetime = Column(DateTime)
     ads = relationship("ExtractedAd", back_populates="run", cascade="all, delete-orphan")
 
 class ScrapeSchedule(Base):
     __tablename__ = 'scrape_schedules'
-    id = Column(Integer, primary_key=True)
-    query = Column(String)
-    frequency_hours = Column(Integer)
-    next_run_at = Column(DateTime)
-    is_active = Column(Integer, default=1)
+    id: int = Column(Integer, primary_key=True)
+    query: str = Column(String)
+    frequency_hours: int = Column(Integer)
+    next_run_at: datetime = Column(DateTime)
+    is_active: int = Column(Integer, default=1)
 
 class ExtractedAd(Base):
     __tablename__ = 'extracted_ads'
-    id = Column(Integer, primary_key=True)
-    run_id = Column(Integer, ForeignKey('scrape_runs.id'))
-    ad_text = Column(Text)
-    launch_date = Column(String)
-    media_links = Column(Text)
-    local_media_path = Column(String)
-    content_hash = Column(String, unique=True)
-    final_destination_url = Column(Text)
-    funnel_type = Column(String)
-    last_seen = Column(DateTime, default=datetime.utcnow)
+    id: int = Column(Integer, primary_key=True)
+    run_id: int = Column(Integer, ForeignKey('scrape_runs.id'))
+    ad_text: str = Column(Text)
+    launch_date: str = Column(String)
+    media_links: str = Column(Text)
+    local_media_path: str = Column(String)
+    content_hash: str = Column(String, unique=True)
+    final_destination_url: str = Column(Text)
+    funnel_type: str = Column(String)
+    last_seen: datetime = Column(DateTime, default=datetime.utcnow)
     run = relationship("ScrapeRun", back_populates="ads")
 
 engine = create_engine('sqlite:///ad_spy.db', connect_args={"check_same_thread": False})
@@ -158,15 +159,15 @@ def background_worker(q):
                 for sch in due_schedules:
                     logger.info(f"Triggering scheduled scrape for: {sch.query}")
                     # Create new run
-                    new_run = ScrapeRun(query=sch.query, status="PENDING")
+                    new_run = ScrapeRun(query=str(sch.query), status="PENDING")
                     session.add(new_run)
                     session.commit()
 
                     # Enqueue
-                    q.put((scrape_meta_ads_task, (new_run.id, sch.query)))
+                    q.put((scrape_meta_ads_task, (int(new_run.id), str(sch.query))))
 
                     # Update schedule
-                    sch.next_run_at = now + timedelta(hours=sch.frequency_hours)
+                    sch.next_run_at = now + timedelta(hours=float(sch.frequency_hours))
                     session.commit()
 
                 # Recovery Logic: Check for failed runs with retries remaining
@@ -179,9 +180,9 @@ def background_worker(q):
                 for run in failed_runs:
                     logger.info(f"Retrying failed run {run.id} for query: {run.query}")
                     run.status = "PENDING"
-                    run.retry_count += 1
+                    run.retry_count = int(run.retry_count) + 1
                     session.commit()
-                    q.put((scrape_meta_ads_task, (run.id, run.query)))
+                    q.put((scrape_meta_ads_task, (int(run.id), str(run.query))))
 
                 session.close()
             except Exception as e:
@@ -200,10 +201,10 @@ def background_worker(q):
                 ).all()
 
                 for ad in old_ads:
-                    if os.path.exists(ad.local_media_path):
-                        os.remove(ad.local_media_path)
+                    if ad.local_media_path and os.path.exists(str(ad.local_media_path)):
+                        os.remove(str(ad.local_media_path))
                         logger.info(f"Pruned old media: {ad.local_media_path}")
-                    ad.local_media_path = None # Keep the DB row, just remove the file
+                    ad.local_media_path = "" # Use empty string instead of None if it's Column[str]
 
                 session.commit()
                 session.close()
@@ -263,7 +264,8 @@ def analyze_ads_with_ai(ads_data_list):
         response = requests.post(url, json=payload, timeout=45)
         response.raise_for_status()
         data = response.json()
-        return data['candidates'][0]['content']['parts'][0]['text']
+        raw_text = data['candidates'][0]['content']['parts'][0]['text']
+        return raw_text
     except Exception as e:
         logger.error(f"AI Multimodal Analysis failed: {e}")
         return f"AI Analysis failed: {str(e)}"
@@ -273,12 +275,14 @@ class BrowserConfig:
     CHROME_USER_DATA_DIR = "/path/to/your/chrome/user/data"  # Plug in your local path here
     EXECUTABLE_PATH = None  # Optional: path to chrome executable
 
+from playwright.async_api import Browser, BrowserContext
+
 class BaseScraper(ABC):
-    def __init__(self, run_id, query_or_url):
+    def __init__(self, run_id: int, query_or_url: str):
         self.run_id = run_id
         self.query_or_url = query_or_url
-        self.browser = None
-        self.context = None
+        self.browser: Optional[Browser] = None
+        self.context: Optional[BrowserContext] = None
 
     @abstractmethod
     async def initialize_browser(self, playwright):
@@ -302,6 +306,8 @@ class BaseScraper(ABC):
         try:
             async with async_playwright() as p:
                 await self.initialize_browser(p)
+                if not self.context:
+                    raise Exception("Browser context not initialized")
                 page = await self.context.new_page()
                 # Anti-bot evasion
                 await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
@@ -318,7 +324,22 @@ class BaseScraper(ABC):
                 ]
                 if run_ads_data:
                     logger.info(f"Starting Multimodal AI analysis for run {self.run_id}")
-                    run.analysis_text = analyze_ads_with_ai(run_ads_data)
+                    analysis_result = analyze_ads_with_ai(run_ads_data)
+                    run.analysis_text = analysis_result
+
+                    # Store individual funnel types back to ads
+                    try:
+                        # Simple extraction: look for "Funnel: [Type]" or "Funnel Mapping: [Type]"
+                        for ad_db in run.ads:
+                            if "Direct-to-Consumer" in str(analysis_result):
+                                ad_db.funnel_type = "Direct-to-Consumer"
+                            elif "Lead Magnet" in str(analysis_result):
+                                ad_db.funnel_type = "Lead Magnet"
+                            elif "VSL" in str(analysis_result) or "Webinar" in str(analysis_result):
+                                ad_db.funnel_type = "VSL/Webinar"
+                    except:
+                        pass
+
                     session.commit()
 
                 run.status = "COMPLETED"
@@ -336,15 +357,15 @@ class BaseScraper(ABC):
             session.close()
 
 class MetaScraper(BaseScraper):
-    async def initialize_browser(self, p):
+    async def initialize_browser(self, playwright):
         if BrowserConfig.CHROME_USER_DATA_DIR and BrowserConfig.CHROME_USER_DATA_DIR != "/path/to/your/chrome/user/data":
-            self.context = await p.chromium.launch_persistent_context(
+            self.context = await playwright.chromium.launch_persistent_context(
                 BrowserConfig.CHROME_USER_DATA_DIR,
                 executable_path=BrowserConfig.EXECUTABLE_PATH,
                 headless=False
             )
         else:
-            self.browser = await p.chromium.launch(headless=True)
+            self.browser = await playwright.chromium.launch(headless=True)
             self.context = await self.browser.new_context()
 
     async def execute_scrape(self, page):
@@ -370,6 +391,9 @@ class MetaScraper(BaseScraper):
         count = await ad_cards.count()
         session = Session()
         run = session.query(ScrapeRun).get(self.run_id)
+        if not run:
+             session.close()
+             return
 
         for i in range(count):
             card = ad_cards.nth(i)
@@ -426,8 +450,8 @@ class MetaScraper(BaseScraper):
         session.close()
 
 class TikTokScraper(BaseScraper):
-    async def initialize_browser(self, p):
-        self.browser = await p.chromium.launch(headless=True)
+    async def initialize_browser(self, playwright):
+        self.browser = await playwright.chromium.launch(headless=True)
         self.context = await self.browser.new_context()
 
     async def execute_scrape(self, page):
@@ -555,7 +579,7 @@ with tabs[2]:
             col4.write("✅ Active" if s.is_active else "⏸️ Paused")
 
             with col5:
-                if s.is_active:
+                if bool(s.is_active):
                     if st.button("Pause", key=f"pause_{s.id}"):
                         s.is_active = 0
                         session.commit()
@@ -612,9 +636,9 @@ with tabs[3]:
         img_cols = st.columns(4)
         img_idx = 0
         for ad in historical_ads:
-            if ad.local_media_path and os.path.exists(ad.local_media_path):
+            if ad.local_media_path and os.path.exists(str(ad.local_media_path)):
                 with img_cols[img_idx % 4]:
-                    st.image(ad.local_media_path, caption=f"Ad #{ad.id} from {ad.run.query}")
+                    st.image(str(ad.local_media_path), caption=f"Ad #{ad.id} from {ad.run.query}")
                 img_idx += 1
             if img_idx >= 12: break # Show top 12
 
