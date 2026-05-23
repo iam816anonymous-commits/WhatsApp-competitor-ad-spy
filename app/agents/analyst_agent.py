@@ -1,75 +1,79 @@
 import logging
 from datetime import datetime, UTC, timedelta
+from typing import Dict, Any
 from app.db.database import get_session
-from app.models.models import Brand, MarketEvent
+from app.models.models import Brand, MarketEvent, ExtractedAd, CompetitorProfile
 from app.agents.ai_agent import analyze_ads_with_ai
 
 logger = logging.getLogger("AdSpyAgent.Analyst")
 
-class MarketAnalystAgent:
+class AnalystAgent:
     @staticmethod
-    async def generate_market_pulse(brand_id: int) -> str:
+    async def generate_market_pulse(brand_id: int, session=None) -> str:
         """
-        Synthesizes recent market events into a strategic summary.
+        Synthesizes recent market events into a strategic summary and calculates velocity.
         """
-        session = get_session()
+        should_close = False
+        if session is None:
+            session = get_session()
+            should_close = True
+
         try:
             brand = session.get(Brand, brand_id)
             if not brand:
                 return "Brand not found."
 
-            # 1. Fetch recent events (last 14 days for more context)
+            # 1. Calculate Velocity Metrics
+            seven_days_ago = datetime.now(UTC) - timedelta(days=7)
+            recent_ads_count = session.query(ExtractedAd).filter(
+                ExtractedAd.brand_id == brand_id,
+                ExtractedAd.last_seen >= seven_days_ago
+            ).count()
+
+            creative_velocity = recent_ads_count / 7.0
+
+            recent_shifts = session.query(MarketEvent).filter(
+                MarketEvent.brand_id == brand_id,
+                MarketEvent.event_type == "Offer Shift",
+                MarketEvent.timestamp >= seven_days_ago
+            ).count()
+            offer_velocity = recent_shifts / 7.0
+
+            # Update Competitor Profile
+            profile = session.query(CompetitorProfile).filter_by(brand_name=brand.name).first()
+            if profile:
+                profile.market_velocity = creative_velocity + (offer_velocity * 10)
+
+            # 2. Fetch recent events
             fourteen_days_ago = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=14)
             events = session.query(MarketEvent).filter(
                 MarketEvent.brand_id == brand_id,
                 MarketEvent.timestamp >= fourteen_days_ago
             ).order_by(MarketEvent.timestamp.desc()).all()
 
-            if not events:
-                return f"No recent market events recorded for {brand.name} in the last 14 days."
-
             event_summary = "\n".join([
                 f"- [{e.timestamp.strftime('%Y-%m-%d')}] {e.event_type}: {e.description}"
                 for e in events
             ])
 
-            # 2. Ask Gemini to synthesize
+            # 3. AI Synthesis
             prompt = f"""
-            SYSTEM: You are a Senior Market Intelligence Analyst.
-            TASK: Synthesize a 'Market Pulse' report for the brand: {brand.name}.
+            SYSTEM: Senior Market Intelligence Analyst.
+            TASK: Market Pulse for {brand.name}.
+            METRICS: Creative Velocity: {creative_velocity}/day, Offer Velocity: {offer_velocity}/day.
 
             RECENT DATA LOG:
             {event_summary}
-
-            ANALYTICAL REQUIREMENTS:
-            1. MOMENTUM: Is this brand scaling or retracting based on event frequency?
-            2. STRATEGY SHIFTS: Identify changes in their offer stack or hook patterns.
-            3. COMPETITIVE THREAT: Rate their current market aggression (1-10).
-            4. ACTIONABLE INSIGHT: What should a competitor do in response to these moves?
-
-            Format the response in professional markdown with clear sections.
             """
 
-            # Use the AI agent. We pass a mock "ad" object that contains our prompt.
-            # analyze_ads_with_ai expects a list of dicts.
             res = await analyze_ads_with_ai([{"text": prompt}])
             return res
         except Exception as e:
-            logger.error(f"Error generating market pulse: {e}")
-            return f"Error generating market pulse: {str(e)}"
+            logger.error(f"Error in AnalystAgent: {e}")
+            return f"Error: {e}"
         finally:
-            session.close()
+            if should_close:
+                session.close()
 
-    @staticmethod
-    async def detect_strategy_drift(brand_id: int):
-        """
-        Periodically called to detect complex shifts not caught by the orchestrator.
-        """
-        session = get_session()
-        try:
-            # Logic to compare last 30 days of snapshots and events
-            pass
-        except Exception as e:
-            logger.error(f"Drift Detection failed for brand {brand_id}: {e}")
-        finally:
-            session.close()
+class MarketAnalystAgent(AnalystAgent):
+    pass

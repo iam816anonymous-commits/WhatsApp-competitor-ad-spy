@@ -121,6 +121,16 @@ class IntelligenceOrchestrator:
         from app.agents.market_agent import MarketAgent
         MarketAgent.analyze_trends(brand.id, session=session)
 
+        # Phase 3: Market Event Agent
+        logger.info("Executing Market Event Agent...")
+        from app.agents.market_event_agent import MarketEventAgent
+        MarketEventAgent.detect_events(brand.id, session=session)
+
+        # Phase 9: Analyst Agent
+        logger.info("Executing Analyst Agent...")
+        from app.agents.analyst_agent import AnalystAgent
+        await AnalystAgent.generate_market_pulse(brand.id, session=session)
+
         # Phase 5: Competitor Profile Update
         profile = session.query(CompetitorProfile).filter_by(brand_name=run.query).first()
         if not profile:
@@ -164,6 +174,10 @@ class IntelligenceOrchestrator:
              if status == "Winning Core Asset":
                   AlertAgent.trigger_winning_asset_alert(brand.id)
                   break
+
+        # Ensure MediaResolver is closed
+        from app.utils.media import MediaResolver
+        await MediaResolver.close()
 
         session.commit()
         session.close()

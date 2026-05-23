@@ -40,7 +40,20 @@ def main():
     # Run FastAPI in a separate thread if needed, or just focus on Streamlit for orchestration
     # For enterprise tier, we run both
     def run_api():
-        uvicorn.run(fastapi_app, host="0.0.0.0", port=8000)
+        import socket
+        def is_port_in_use(port):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                return s.connect_ex(('localhost', port)) == 0
+
+        target_port = 8000
+        if is_port_in_use(target_port):
+            logging.info(f"Port {target_port} already in use. Attempting 8001.")
+            target_port = 8001
+            if is_port_in_use(target_port):
+                logging.error(f"Port {target_port} also in use. API server will not start.")
+                return
+
+        uvicorn.run(fastapi_app, host="0.0.0.0", port=target_port)
 
     api_thread = Thread(target=run_api, daemon=True)
     api_thread.start()

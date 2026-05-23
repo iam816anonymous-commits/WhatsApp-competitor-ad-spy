@@ -78,6 +78,10 @@ class Brand(Base):
     website: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     last_monitored: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
+    # Disambiguation / Query Normalization
+    aliases: Mapped[Optional[str]] = mapped_column(Text, nullable=True) # Comma separated
+    negative_patterns: Mapped[Optional[str]] = mapped_column(Text, nullable=True) # Comma separated
+
     ads: Mapped[List["ExtractedAd"]] = relationship("ExtractedAd", back_populates="brand")
     campaigns: Mapped[List["Campaign"]] = relationship("Campaign", back_populates="brand")
     offers: Mapped[List["Offer"]] = relationship("Offer", back_populates="brand")
@@ -244,6 +248,57 @@ class ScrapeSchedule(Base):
 
     project: Mapped[Optional["Project"]] = relationship("Project", back_populates="schedules")
 
+class SocialEvent(Base):
+    __tablename__ = 'social_events'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    brand_id: Mapped[int] = mapped_column(ForeignKey('brands.id'))
+    event_type: Mapped[str] = mapped_column(String) # Reel, Post, Story, Collab
+    platform: Mapped[str] = mapped_column(String) # Instagram, TikTok
+    content_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    media_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    engagement_count: Mapped[int] = mapped_column(default=0)
+    hashtags: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+    brand: Mapped["Brand"] = relationship("Brand")
+
+class Product(Base):
+    __tablename__ = 'products'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    brand_id: Mapped[int] = mapped_column(ForeignKey('brands.id'))
+    name: Mapped[str] = mapped_column(String)
+    price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    discount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    rating: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    review_count: Mapped[int] = mapped_column(default=0)
+    availability: Mapped[bool] = mapped_column(default=True)
+    source: Mapped[str] = mapped_column(String) # Amazon, Flipkart, Myntra
+    last_updated: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+    # Ecommerce Intelligence Expansion
+    stock: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    bundles: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    collections: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    delivery_speed: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    # Temporal History
+    price_history: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    discount_history: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    stock_history: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+    brand: Mapped["Brand"] = relationship("Brand")
+
+class TrafficSnapshot(Base):
+    __tablename__ = 'traffic_snapshots'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    brand_id: Mapped[int] = mapped_column(ForeignKey('brands.id'))
+    estimated_monthly_visits: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    top_countries: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    source_distribution: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+    brand: Mapped["Brand"] = relationship("Brand")
+
 class ExtractedAd(Base):
     __tablename__ = 'extracted_ads'
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -255,6 +310,31 @@ class ExtractedAd(Base):
     cluster_id: Mapped[Optional[int]] = mapped_column(ForeignKey('creative_clusters.id'), nullable=True)
     persona_id: Mapped[Optional[int]] = mapped_column(ForeignKey('personas.id'), nullable=True)
     hook_id: Mapped[Optional[int]] = mapped_column(ForeignKey('hooks.id'), nullable=True)
+
+    # Unified Schema Fields
+    source: Mapped[str] = mapped_column(String, server_default="Meta") # Meta, TikTok, Google
+    country: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    language: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    advertiser: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    creative_type: Mapped[Optional[str]] = mapped_column(String, nullable=True) # Video, Image, Carousel
+    engagement: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True) # Views, Likes, etc.
+    audio_info: Mapped[Optional[str]] = mapped_column(Text, nullable=True) # TikTok viral sound info
+
+    # TikTok Creative Intelligence Expansion
+    tiktok_audio: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    tiktok_hashtags: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    viral_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    engagement_bucket: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    creator_handle: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    video_duration: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    ugc_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # Intelligence Extraction Fields
+    hook_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    emotion: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    persona: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    offer: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    urgency: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     ad_text: Mapped[str] = mapped_column(Text)
     headline: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -269,6 +349,11 @@ class ExtractedAd(Base):
     # Predictive Metrics
     winner_probability: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     fatigue_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # Business Logic Fields
+    price: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    product_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    collection: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     # Phase 3/5 Visual Intelligence
     creative_embedding: Mapped[Optional[bytes]] = mapped_column(nullable=True)

@@ -3,7 +3,7 @@ import pandas as pd
 import threading
 import os
 import io
-from datetime import datetime, UTC
+from datetime import datetime, UTC, timedelta
 from sqlalchemy import func, desc
 
 from app.db.database import get_session
@@ -87,18 +87,74 @@ def render_ui(task_queue):
 
     with tabs[4]:
         st.subheader("Historical Data")
+
+        # Filter Logic (PHASE 5 EXPANSION)
+        col1, col2, col3, col4 = st.columns(4)
+        source_filter = col1.multiselect("Source", ["Meta", "TikTok", "Google", "Instagram"], default=["Meta", "TikTok", "Google", "Instagram"])
+        funnel_filter = col2.multiselect("Funnel Type", ["Direct", "Lead Gen", "Awareness"])
+        confidence_min = col3.slider("Min Confidence", 0.0, 1.0, 0.0)
+        search_query = col4.text_input("Search Text")
+
+        col5, col6, col7, col8 = st.columns(4)
+        offer_filter = col5.multiselect("Offer Type", ["Discount", "Bundle", "Free Gift", "None"])
+        persona_filter = col6.multiselect("Persona", ["Young Adult", "Professional", "Parent", "Student"])
+        country_filter = col7.multiselect("Country", ["India", "USA", "UK", "Canada", "Global"])
+        language_filter = col8.multiselect("Language", ["English", "Hindi", "Spanish", "French"])
+
+        col9, col10, col11, col12 = st.columns(4)
+        hook_filter = col9.multiselect("Hook Type", ["Question", "Stat", "UGC", "Problem/Solution"])
+        collection_filter = col10.text_input("Collection")
+        price_min = col11.number_input("Min Price", value=0.0)
+        price_max = col12.number_input("Max Price", value=10000.0)
+
+        col13, col14, col15, col16 = st.columns(4)
+        ugc_only = col13.checkbox("UGC Only")
+        viral_only = col14.checkbox("Viral Only (Score > 0.8)")
+        date_range = col15.date_input("Date Range", [datetime.now(UTC) - timedelta(days=30), datetime.now(UTC)])
+
         session = get_session()
-        ads = session.query(ExtractedAd).order_by(desc(ExtractedAd.id)).limit(100).all()
+        query = session.query(ExtractedAd)
+
+        if source_filter:
+            query = query.filter(ExtractedAd.source.in_(source_filter))
+        if funnel_filter:
+            query = query.filter(ExtractedAd.funnel_type.in_(funnel_filter))
+        if confidence_min > 0:
+            query = query.filter(ExtractedAd.extraction_confidence >= confidence_min)
+        if search_query:
+            query = query.filter(ExtractedAd.ad_text.contains(search_query))
+        if offer_filter:
+            query = query.filter(ExtractedAd.offer.in_(offer_filter))
+        if persona_filter:
+            query = query.filter(ExtractedAd.persona.in_(persona_filter))
+        if country_filter:
+            query = query.filter(ExtractedAd.country.in_(country_filter))
+        if language_filter:
+            query = query.filter(ExtractedAd.language.in_(language_filter))
+        if hook_filter:
+            query = query.filter(ExtractedAd.hook_type.in_(hook_filter))
+        if collection_filter:
+            query = query.filter(ExtractedAd.collection.contains(collection_filter))
+        if ugc_only:
+            query = query.filter(ExtractedAd.ugc_score > 0.5)
+        if viral_only:
+            query = query.filter(ExtractedAd.viral_score > 0.8)
+
+        ads = query.order_by(desc(ExtractedAd.id)).limit(100).all()
         if ads:
             df = pd.DataFrame([{
                 "ID": a.id,
+                "Source": a.source,
                 "Brand": a.run.query,
                 "Text": a.ad_text[:50],
                 "Funnel": a.funnel_type,
+                "Price": a.price,
                 "Confidence": a.extraction_confidence,
                 "Review Req": "⚠️" if a.needs_review else "✅"
             } for a in ads])
-            st.dataframe(df)
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.info("No ads match current filters.")
         session.close()
 
     with tabs[5]:
