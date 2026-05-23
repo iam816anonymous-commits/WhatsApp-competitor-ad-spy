@@ -190,6 +190,12 @@ class CritiqueEvent(Base):
     severity: Mapped[float] = mapped_column(default=0.5)
     timestamp: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
+class EmbeddingCache(Base):
+    __tablename__ = 'embedding_cache'
+    content_hash: Mapped[str] = mapped_column(String, primary_key=True)
+    vector: Mapped[bytes] = mapped_column(nullable=False)
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
 class RawEvidence(Base):
     __tablename__ = 'raw_evidence'
     id: Mapped[int] = mapped_column(primary_key=True)

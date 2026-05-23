@@ -5,11 +5,16 @@ sqlalchemy
 pandas
 openpyxl
 requests
+fastapi
+uvicorn
+opencv-python-headless
+imagehash
 google-generativeai
 python-dotenv
 aiohttp
 alembic
 pillow
+torchvision
 sentence-transformers
 psycopg2-binary
 torch

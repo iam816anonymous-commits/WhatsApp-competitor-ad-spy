@@ -1,4 +1,5 @@
 import os
+import asyncio
 import aiohttp
 import hashlib
 import io
@@ -36,8 +37,10 @@ async def download_media(url: str) -> Optional[str]:
                     os.makedirs("media_archive", exist_ok=True)
                     filepath = os.path.join("media_archive", filename)
 
-                    with open(filepath, "wb") as f:
-                        f.write(content)
+                    async def write_file():
+                        with open(filepath, "wb") as f:
+                            f.write(content)
+                    await asyncio.to_thread(write_file)
                     return filepath
     except Exception as e:
         logger.error(f"Media download failed: {e}")
