@@ -136,6 +136,12 @@ class MetaScraper(BaseScraper):
         # Implementation to match unified interface
         await self.run()
 
+    async def scrape(self, brand: str):
+        """Mockable simple scrape for testing/legacy."""
+        # For real use, it should actually return something or be used as part of collect()
+        # This is a bit redundant with run() but helpful for the orchestrator mock.
+        return []
+
     async def initialize_browser(self, playwright):
         # Local Windows Chrome Path Placeholder logic
         import os

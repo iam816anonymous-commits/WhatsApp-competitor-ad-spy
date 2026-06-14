@@ -19,7 +19,10 @@ class LandingPageScraper:
             "email_capture_detected": False,
             "pixels_detected": {},
             "has_checkout": False,
-            "resolved_url": url
+            "resolved_url": url,
+            "testimonials": None,
+            "guarantees": None,
+            "funnel_category": "General"
         }
 
         try:
@@ -65,9 +68,28 @@ class LandingPageScraper:
                 pixels = {
                     "facebook": "fbevents.js" in html_content,
                     "google": "googletagmanager.com" in html_content,
-                    "tiktok": "ttq.instance" in html_content
+                    "tiktok": "ttq.instance" in html_content,
+                    "klaviyo": "klaviyo.com" in html_content,
+                    "shopify": "myshopify.com" in html_content
                 }
                 results["pixels_detected"] = pixels
+
+                # 6. Winner OS Intelligence: Testimonials & Guarantees
+                testi_matches = re.findall(r'"([^"]*)"\s*-', body_text) # Simple quote pattern
+                if testi_matches:
+                    results["testimonials"] = "\n".join(testi_matches[:3])
+
+                guarantee_keywords = ["guarantee", "warranty", "refund", "money back"]
+                guarantees_found = [line.strip() for line in body_text.split("\n") if any(kw in line.lower() for kw in guarantee_keywords)]
+                results["guarantees"] = "\n".join(guarantees_found[:2])
+
+                # 7. Funnel Category Detection
+                if "product" in page.url or "item" in page.url:
+                    results["funnel_category"] = "Product Page"
+                elif "checkout" in page.url:
+                    results["funnel_category"] = "Checkout"
+                elif await page.locator("video").count() > 0:
+                    results["funnel_category"] = "VSL"
 
                 await browser.close()
         except Exception as e:

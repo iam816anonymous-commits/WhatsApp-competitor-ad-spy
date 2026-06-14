@@ -4,7 +4,8 @@ from queue import Queue
 from threading import Thread
 from dotenv import load_dotenv
 
-from app.ui.dashboard import render_ui
+from app.ui.winner_dashboard import render_winner_ui
+from app.ui.marketing import render_landing_page, render_onboarding
 from app.workers.scheduler import background_worker
 from app.db.database import engine
 from app.models.models import Base
@@ -58,7 +59,12 @@ def main():
     api_thread = Thread(target=run_api, daemon=True)
     api_thread.start()
 
-    render_ui(q)
+    if st.session_state.get("show_onboarding"):
+        render_onboarding()
+    elif not st.session_state.get("user_ready"):
+        render_landing_page()
+    else:
+        render_winner_ui(q)
 
 if __name__ == "__main__":
     main()

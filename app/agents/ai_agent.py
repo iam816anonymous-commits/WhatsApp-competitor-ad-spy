@@ -12,6 +12,18 @@ logger = logging.getLogger("AdSpyAgent.AI")
 
 class AIConfig:
     GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY")
+    _session: Optional[aiohttp.ClientSession] = None
+
+    @classmethod
+    async def get_session(cls) -> aiohttp.ClientSession:
+        if cls._session is None or cls._session.closed:
+            cls._session = aiohttp.ClientSession()
+        return cls._session
+
+    @classmethod
+    async def close_session(cls):
+        if cls._session and not cls._session.closed:
+            await cls._session.close()
 
 async def analyze_ads_with_ai(ads_data_list: List[Dict[str, Any]]) -> str:
     if not AIConfig.GEMINI_API_KEY:
@@ -67,15 +79,15 @@ async def analyze_ads_with_ai(ads_data_list: List[Dict[str, Any]]) -> str:
         payload = {
             "contents": [{"parts": parts}]
         }
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, timeout=45) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data['candidates'][0]['content']['parts'][0]['text']
-                else:
-                    err_text = await response.text()
-                    logger.error(f"Gemini API error: {response.status} - {err_text}")
-                    return f"AI Analysis failed: {response.status}"
+        session = await AIConfig.get_session()
+        async with session.post(url, json=payload, timeout=45) as response:
+            if response.status == 200:
+                data = await response.json()
+                return data['candidates'][0]['content']['parts'][0]['text']
+            else:
+                err_text = await response.text()
+                logger.error(f"Gemini API error: {response.status} - {err_text}")
+                return f"AI Analysis failed: {response.status}"
     except Exception as e:
         logger.error(f"AI Multimodal Analysis failed: {e}")
         return f"AI Analysis failed: {str(e)}"

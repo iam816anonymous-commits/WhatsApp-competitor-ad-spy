@@ -6,6 +6,9 @@ from datetime import datetime, UTC
 from app.agents.ai_agent import analyze_ads_with_ai
 from app.agents.vision_agent import generate_image_embedding
 from app.agents.prediction_agent import PredictionAgent
+from app.engines.winner_engine import WinnerEngine, EmergingEngine, FamilyTreeEngine
+from app.engines.offer_engine import OfferEngine
+from app.engines.report_generator import WinnerReportGenerator
 from app.db.database import get_session
 from app.db.tenant_context import get_tenant
 from app.models.models import ScrapeRun, ExtractedAd, Brand, Campaign, Offer, LandingPage, MarketEvent, Persona, Hook, CompetitorProfile
@@ -165,7 +168,24 @@ class IntelligenceOrchestrator:
         except Exception as e:
             logger.error(f"Critique/Repair Layer failed: {e}")
 
+        # 7. Winner Intelligence (Phase 1 pivot)
+        logger.info("Executing Winner Intelligence Engines...")
+        for ad in run.ads:
+            ad.winner_score = WinnerEngine.calculate_winner_score(ad)
+            OfferEngine.link_ad_to_offer(ad, session)
+
+        FamilyTreeEngine.identify_creative_clones(session)
+        EmergingEngine.detect_emerging_winners(session)
+
+        # Generate the report
+        report = WinnerReportGenerator.generate_report(brand.id, session)
+        if report:
+            run.analysis_text = json.dumps(report, default=str)
+
         # Check for winners to alert
+        from app.engines.alert_engine import AlertEngine
+        AlertEngine.process_alerts(session)
+
         from app.agents.alert_agent import AlertAgent
         # Logic: If any ad in this run has longevity > 21 days
         for ad in run.ads:

@@ -75,6 +75,7 @@ class Brand(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String, unique=True)
     industry: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    niche: Mapped[Optional[str]] = mapped_column(String, nullable=True) # Skincare, Fashion, etc.
     website: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     last_monitored: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
@@ -83,12 +84,12 @@ class Brand(Base):
     negative_patterns: Mapped[Optional[str]] = mapped_column(Text, nullable=True) # Comma separated
 
     ads: Mapped[List["ExtractedAd"]] = relationship("ExtractedAd", back_populates="brand")
-    campaigns: Mapped[List["Campaign"]] = relationship("Campaign", back_populates="brand")
-    offers: Mapped[List["Offer"]] = relationship("Offer", back_populates="brand")
-    snapshots: Mapped[List["TrendSnapshot"]] = relationship("TrendSnapshot", back_populates="brand")
-    personas: Mapped[List["Persona"]] = relationship("Persona", back_populates="brand")
-    hooks: Mapped[List["Hook"]] = relationship("Hook", back_populates="brand")
-    events: Mapped[List["MarketEvent"]] = relationship("MarketEvent", back_populates="brand")
+    campaigns: Mapped[List["Campaign"]] = relationship("Campaign", back_populates="brand", cascade="all, delete-orphan")
+    offers: Mapped[List["Offer"]] = relationship("Offer", back_populates="brand", cascade="all, delete-orphan")
+    snapshots: Mapped[List["TrendSnapshot"]] = relationship("TrendSnapshot", back_populates="brand", cascade="all, delete-orphan")
+    personas: Mapped[List["Persona"]] = relationship("Persona", back_populates="brand", cascade="all, delete-orphan")
+    hooks: Mapped[List["Hook"]] = relationship("Hook", back_populates="brand", cascade="all, delete-orphan")
+    events: Mapped[List["MarketEvent"]] = relationship("MarketEvent", back_populates="brand", cascade="all, delete-orphan")
 
 class Persona(Base):
     __tablename__ = 'personas'
@@ -146,7 +147,7 @@ class Offer(Base):
     is_active: Mapped[int] = mapped_column(Integer, default=1)
 
     brand: Mapped["Brand"] = relationship("Brand", back_populates="offers")
-    ads: Mapped[List["ExtractedAd"]] = relationship("ExtractedAd", back_populates="offer")
+    ads: Mapped[List["ExtractedAd"]] = relationship("ExtractedAd", back_populates="offer_rel")
 
 class LandingPage(Base):
     __tablename__ = 'landing_pages'
@@ -162,6 +163,12 @@ class LandingPage(Base):
     pricing: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     email_capture_detected: Mapped[bool] = mapped_column(default=False)
     has_checkout: Mapped[bool] = mapped_column(default=False)
+
+    # Winner Intelligence Additions
+    testimonials: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    guarantees: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    funnel_category: Mapped[Optional[str]] = mapped_column(String, nullable=True) # VSL, Product Page, etc.
+    landing_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     ads: Mapped[List["ExtractedAd"]] = relationship("ExtractedAd", back_populates="landing_page")
 
@@ -346,8 +353,12 @@ class ExtractedAd(Base):
     funnel_type: Mapped[Optional[str]] = mapped_column(nullable=True)
     last_seen: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
-    # Predictive Metrics
+    # Predictive & Winner Metrics
     winner_probability: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    winner_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    winner_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    is_emerging: Mapped[bool] = mapped_column(default=False)
+    original_ad_id: Mapped[Optional[int]] = mapped_column(ForeignKey('extracted_ads.id'), nullable=True)
     fatigue_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     # Business Logic Fields
@@ -368,8 +379,25 @@ class ExtractedAd(Base):
     run: Mapped["ScrapeRun"] = relationship("ScrapeRun", back_populates="ads")
     brand: Mapped[Optional["Brand"]] = relationship("Brand", back_populates="ads")
     campaign: Mapped[Optional["Campaign"]] = relationship("Campaign", back_populates="ads")
-    offer: Mapped[Optional["Offer"]] = relationship("Offer", back_populates="ads")
+    offer_rel: Mapped[Optional["Offer"]] = relationship("Offer", back_populates="ads")
     landing_page: Mapped[Optional["LandingPage"]] = relationship("LandingPage", back_populates="ads")
     cluster: Mapped[Optional["CreativeCluster"]] = relationship("CreativeCluster", back_populates="ads")
     persona_rel: Mapped[Optional["Persona"]] = relationship("Persona", back_populates="ads")
     hook_rel: Mapped[Optional["Hook"]] = relationship("Hook", back_populates="ads")
+
+class WeeklyReport(Base):
+    __tablename__ = 'weekly_reports'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    week_start: Mapped[datetime] = mapped_column()
+    niche: Mapped[str] = mapped_column(String)
+    content_json: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+class Watchlist(Base):
+    __tablename__ = 'watchlists'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey('organizations.id'))
+    brand_id: Mapped[Optional[int]] = mapped_column(ForeignKey('brands.id'), nullable=True)
+    niche: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    alert_threshold: Mapped[float] = mapped_column(default=80.0)
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
